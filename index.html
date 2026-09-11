@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Eastbound arrivals</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  body {
+    display: flex;
+    align-items: center;
+    flex-direction: column;
+    justify-content: center;
+    gap: 3vh;
+  }
+  body.idle { cursor: none; }
+  .screen {
+    /* fill the display while keeping the board's proportions */
+    width: min(96vw, calc(96vh * 192 / 45));
+  }
+  body.dual .screen { width: min(96vw, calc(46.5vh * 192 / 45)); }
+  .screen[hidden] { display: none; }
+  #toggle {
+    position: fixed;
+    right: 16px; bottom: 16px;
+    padding: 5px 10px;
+    font: 12px/1.2 system-ui, sans-serif;
+    color: #c98a2a;
+    background: #000;
+    border: 1px solid #4a3312;
+    border-radius: 4px;
+    cursor: pointer;
+    opacity: 1;
+    transition: opacity .4s;
+  }
+  body.idle #toggle { opacity: 0; pointer-events: none; }
+  body.idle #toggle:focus-visible { opacity: 1; pointer-events: auto; }
+  #toggle:focus-visible { outline: 2px solid #ffa31a; outline-offset: 2px; }
+  canvas { display: block; width: 100%; height: auto; }
+  #status {
+    position: fixed;
+    left: 0; right: 0; bottom: 2vh;
+    text-align: center;
+    font: 14px/1.4 system-ui, sans-serif;
+    color: #6b5a3c;
+  }
+  #status[hidden] { display: none; }
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; overflow: hidden;
+    clip: rect(0 0 0 0); white-space: nowrap;
+  }
+</style>
+</head>
+<body class="idle">
+<div class="screen"><canvas id="board-P4" role="img" aria-label="Acton Main Line eastbound arrivals"></canvas></div>
+<div class="screen" id="central-wrap" hidden><canvas id="board-CL" role="img" aria-label="North Acton Central line eastbound arrivals"></canvas></div>
+<button id="toggle" type="button" aria-pressed="false">Show Central line</button>
+<p id="status" hidden></p>
+<div class="sr-only" aria-live="polite" id="sr"></div>
+
+<script>
+(() => {
+  // ---------- 5x7 dot matrix font (8 rows, last row for descenders) ----------
+  const F = {
+    ' ':[0,0,0,0,0,0,0], '!':[4,4,4,4,0,0,4], '"':[10,10,0,0,0,0,0], "'":[4,4,8,0,0,0,0],
+    '(':[2,4,8,8,8,4,2], ')':[8,4,2,2,2,4,8], '+':[0,4,4,31,4,4,0], ',':[0,0,0,0,12,4,8],
+    '-':[0,0,0,31,0,0,0], '.':[0,0,0,0,0,12,12], '/':[0,1,2,4,8,16,0], ':':[0,12,12,0,12,12,0],
+    '&':[12,18,20,8,21,18,13],
+    '0':[14,17,19,21,25,17,14], '1':[4,12,4,4,4,4,14], '2':[14,17,1,2,4,8,31],
+    '3':[31,2,4,2,1,17,14], '4':[2,6,10,18,31,2,2], '5':[31,16,30,1,1,17,14],
+    '6':[6,8,16,30,17,17,14], '7':[31,1,2,4,8,8,8], '8':[14,17,17,14,17,17,14],
+    '9':[14,17,17,15,1,2,12],
+    'A':[14,17,17,17,31,17,17], 'B':[30,17,17,30,17,17,30], 'C':[14,17,16,16,16,17,14],
+    'D':[28,18,17,17,17,18,28], 'E':[31,16,16,30,16,16,31], 'F':[31,16,16,30,16,16,16],
+    'G':[14,17,16,23,17,17,15], 'H':[17,17,17,31,17,17,17], 'I':[14,4,4,4,4,4,14],
+    'J':[7,2,2,2,2,18,12], 'K':[17,18,20,24,20,18,17], 'L':[16,16,16,16,16,16,31],
+    'M':[17,27,21,21,17,17,17], 'N':[17,17,25,21,19,17,17], 'O':[14,17,17,17,17,17,14],
+    'P':[30,17,17,30,16,16,16], 'Q':[14,17,17,17,21,18,13], 'R':[30,17,17,30,20,18,17],
+    'S':[15,16,16,14,1,1,30], 'T':[31,4,4,4,4,4,4], 'U':[17,17,17,17,17,17,14],
+    'V':[17,17,17,17,17,10,4], 'W':[17,17,17,21,21,21,10], 'X':[17,17,10,4,10,17,17],
+    'Y':[17,17,17,10,4,4,4], 'Z':[31,1,2,4,8,16,31],
+    'a':[0,0,14,1,15,17,15], 'b':[16,16,22,25,17,17,30], 'c':[0,0,14,16,16,17,14],
+    'd':[1,1,13,19,17,17,15], 'e':[0,0,14,17,31,16,14], 'f':[6,9,8,28,8,8,8],
+    'g':[0,0,15,17,17,15,1,14], 'h':[16,16,22,25,17,17,17], 'i':[4,0,12,4,4,4,14],
+    'j':[2,0,6,2,2,2,18,12], 'k':[16,16,18,20,24,20,18], 'l':[12,4,4,4,4,4,14],
+    'm':[0,0,26,21,21,17,17], 'n':[0,0,22,25,17,17,17], 'o':[0,0,14,17,17,17,14],
+    'p':[0,0,30,17,17,30,16,16], 'q':[0,0,15,17,17,15,1,1], 'r':[0,0,22,25,16,16,16],
+    's':[0,0,14,16,14,1,30], 't':[8,8,28,8,8,9,6], 'u':[0,0,17,17,17,19,13],
+    'v':[0,0,17,17,17,10,4], 'w':[0,0,17,17,21,21,10], 'x':[0,0,17,10,4,10,17],
+    'y':[0,0,17,17,17,15,1,14], 'z':[0,0,31,2,4,8,31]
+  };
+  const GLYPH = {};
+  for (const [ch, rows] of Object.entries(F)) {
+    const r = rows.concat(Array(8 - rows.length).fill(0));
+    let left = 5, right = -1;
+    r.forEach(v => { for (let c = 0; c < 5; c++) if ((v >> (4 - c)) & 1) { left = Math.min(left, c); right = Math.max(right, c); } });
+    if (/[0-9]/.test(ch)) { left = 0; right = 4; }      // tabular digits
+    if (ch === ' ') { left = 0; right = 1; }
+    GLYPH[ch] = { rows: r, left, width: right - left + 1 };
+  }
+
+  // ---------- board geometry ----------
+  const W = 192, H = 45, ROW_Y = [2, 12, 22, 35];
+  const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  function measure(text) {
+    let w = 0;
+    for (const ch of text) { const g = GLYPH[ch] || GLYPH[' ']; w += g.width + 1; }
+    return Math.max(0, w - 1);
+  }
+  function drawText(buf, text, x, y) {
+    for (const ch of text) {
+      const g = GLYPH[ch] || GLYPH[' '];
+      for (let r = 0; r < 8; r++) {
+        const v = g.rows[r];
+        if (!v) continue;
+        for (let c = g.left; c < g.left + g.width; c++) {
+          if ((v >> (4 - c)) & 1) {
+            const px = x + c - g.left, py = y + r;
+            if (px >= 0 && px < W && py >= 0 && py < H) buf[py * W + px] = 1;
+          }
+        }
+      }
+      x += g.width + 1;
+    }
+  }
+
+  // ---------- time helpers (always London time) ----------
+  const clockFmt = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+  const hmFmt = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', hour: '2-digit', minute: '2-digit', hour12: false });
+
+  // ---------- data ----------
+  const URL = 'https://api.tfl.gov.uk/StopPoint/910GACTONML/ArrivalDepartures?lineIds=elizabeth';
+  const EAST = /abbey wood|shenfield|paddington|liverpool|whitechapel|canary|stratford|farringdon|tottenham|bond street|romford|ilford|custom house|woolwich/i;
+  const state = {
+    P3: { trains: [], messages: [], mode: 'connecting', updated: 0 },
+    P4: { trains: [], messages: [], mode: 'connecting', updated: 0 },
+    CL: { trains: [], messages: [], mode: 'connecting', updated: 0 }
+  };
+  let centralShown = false;
+
+  const cleanName = n => n.replace(/\s+(Rail|Underground|DLR|Elizabeth line) Station$/i, '').replace(/\s+Station$/i, '').trim();
+  const platformOf = t => {
+    if (/\b3\b/.test(t.platformName || '')) return 'P3';
+    if (/\b4\b/.test(t.platformName || '')) return 'P4';
+    return EAST.test(t.destinationName || '') ? 'P4' : 'P3';
+  };
+
+  function ingest(list, mode) {
+    const now = Date.now();
+    const next = { P3: { trains: [], messages: [] }, P4: { trains: [], messages: [] } };
+    for (const t of list) {
+      const p = platformOf(t);
+      const sched = new Date(t.scheduledTimeOfArrival || t.scheduledTimeOfDeparture).getTime();
+      const eta = new Date(t.estimatedTimeOfArrival || t.estimatedTimeOfDeparture || t.scheduledTimeOfArrival || t.scheduledTimeOfDeparture).getTime();
+      const dest = cleanName(t.destinationName || 'Check front of train');
+      if (t.departureStatus === 'Cancelled') {
+        if (sched > now - 60e3 && sched < now + 90 * 60e3) {
+          const why = (t.cause || '').replace(/^This service has been cancelled\s*/i, '').replace(/\.$/, '');
+          next[p].messages.push({ at: sched, text: `The ${hmFmt.format(sched)} ${dest} service is cancelled${why ? ' ' + why : ''}` });
+        }
+        continue;
+      }
+      if (eta < now - 30e3) continue;
+      next[p].trains.push({ dest, eta });
+      const late = Math.round((eta - sched) / 60e3);
+      if (late >= 2 && eta < now + 60 * 60e3) {
+        next[p].messages.push({ at: sched, text: `The ${hmFmt.format(sched)} ${dest} service is running ${late} min late` });
+      }
+    }
+    for (const p of ['P3', 'P4']) {
+      next[p].trains.sort((a, b) => a.eta - b.eta);
+      next[p].messages.sort((a, b) => a.at - b.at);
+      next[p].messages = next[p].messages.slice(0, 4).map(m => m.text);
+      next[p].mode = mode;
+      next[p].updated = Date.now();
+      state[p] = next[p];
+    }
+    updateStatus();
+    describe();
+  }
+
+  // Timetable pattern used only when live data can't be reached
+  function simulated() {
+    const now = new Date();
+    const pattern = [
+      ['Heathrow Terminal 4 Rail Station', 'Platform 3', [0, 15, 30, 45]],
+      ['Heathrow Terminal 5 Rail Station', 'Platform 3', [10, 39]],
+      ['Reading Rail Station', 'Platform 3', [22, 52]],
+      ['Abbey Wood', 'Platform 4', [10, 25, 40, 55]]
+    ];
+    const out = [];
+    const base = new Date(now); base.setSeconds(0, 0); base.setMinutes(0);
+    for (let h = 0; h < 3; h++) {
+      for (const [dest, plat, mins] of pattern) {
+        for (const m of mins) {
+          const t = new Date(base.getTime() + h * 3600e3 + m * 60e3).toISOString();
+          out.push({ destinationName: dest, platformName: plat, scheduledTimeOfArrival: t, departureStatus: 'OnTime' });
+        }
+      }
+    }
+    return out;
+  }
+
+  async function refresh() {
+    try {
+      const res = await fetch(URL, { cache: 'no-store' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      ingest(await res.json(), 'live');
+    } catch (e) {
+      if (state.P4.mode !== 'live' || Date.now() - state.P4.updated > 3 * 60e3) ingest(simulated(), 'timetable');
+    }
+  }
+
+  // ---------- Central line, North Acton eastbound ----------
+  const CL_URL = 'https://api.tfl.gov.uk/StopPoint/940GZZLUNAN/Arrivals';
+  const CL_STATUS_URL = 'https://api.tfl.gov.uk/Line/central/Status';
+
+  function ingestCentral(list, lineStatus, mode) {
+    const now = Date.now();
+    const seen = new Map();
+    for (const t of list) {
+      if (t.lineId !== 'central' || !/eastbound/i.test(t.platformName || '')) continue;
+      if (/north acton/i.test(t.destinationName || '')) continue;   // not in service beyond here
+      const dest = cleanName(t.destinationName || 'Check front of train');
+      const towards = (t.towards || '').trim();
+      const name = towards && towards.toLowerCase().startsWith(dest.toLowerCase()) ? towards : dest;
+      const eta = new Date(t.expectedArrival).getTime();
+      if (eta < now - 30e3) continue;
+      const key = t.vehicleId || name + eta;
+      if (!seen.has(key) || seen.get(key).eta > eta) seen.set(key, { dest: name, eta });
+    }
+    const messages = [];
+    for (const line of lineStatus || []) {
+      for (const st of line.lineStatuses || []) {
+        if (st.statusSeverity !== 10 && st.reason) messages.push(st.reason.replace(/\s+/g, ' ').trim().replace(/\.$/, ''));
+      }
+    }
+    state.CL = {
+      trains: [...seen.values()].sort((a, b) => a.eta - b.eta),
+      messages: [...new Set(messages)].slice(0, 2),
+      mode,
+      updated: now
+    };
+    updateStatus();
+    describe();
+  }
+
+  function simulatedCentral() {
+    const out = [];
+    const base = new Date(); base.setSeconds(0, 0); base.setMinutes(0);
+    const dests = [['Epping Underground Station', 'Epping'], ['Hainault Underground Station', 'Hainault via Newbury Park']];
+    for (let m = 1, i = 0; m < 180; m += 4, i++) {
+      const [destinationName, towards] = dests[i % 2];
+      out.push({ lineId: 'central', platformName: 'Eastbound - Platform 3', destinationName, towards,
+                 expectedArrival: new Date(base.getTime() + m * 60e3).toISOString() });
+    }
+    return out;
+  }
+
+  async function refreshCentral() {
+    if (!centralShown) return;
+    try {
+      const res = await fetch(CL_URL, { cache: 'no-store' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const list = await res.json();
+      let lineStatus = [];
+      try { const r = await fetch(CL_STATUS_URL, { cache: 'no-store' }); if (r.ok) lineStatus = await r.json(); } catch (e) {}
+      ingestCentral(list, lineStatus, 'live');
+    } catch (e) {
+      if (state.CL.mode !== 'live' || Date.now() - state.CL.updated > 3 * 60e3) ingestCentral(simulatedCentral(), [], 'timetable');
+    }
+  }
+
+  function updateStatus() {
+    const el = document.getElementById('status');
+    const offline = state.P4.mode === 'timetable' || (centralShown && state.CL.mode === 'timetable');
+    if (!offline) { el.hidden = true; return; }
+    el.hidden = false;
+    el.textContent = 'Live data unavailable, showing the usual timetable. Open this file directly in a browser for live times.';
+  }
+
+  // ---------- rendering ----------
+  function minsLabel(eta) {
+    const m = Math.round((eta - Date.now()) / 60e3);
+    return m <= 0 ? 'Due' : `${m} min`;
+  }
+  function fitDest(name, maxW) {
+    if (measure(name) <= maxW) return name;
+    let n = name.replace(/Terminals?\s/, 'T');
+    while (measure(n) > maxW && n.length > 1) n = n.slice(0, -1);
+    return n.trimEnd();
+  }
+
+  class Board {
+    constructor(id, key) {
+      this.key = key;
+      this.canvas = document.getElementById(id);
+      this.ctx = this.canvas.getContext('2d');
+      this.buf = new Uint8Array(W * H);
+      this.resetBottom();
+      new ResizeObserver(() => this.resize()).observe(this.canvas.parentElement);
+      this.resize();
+    }
+    resetBottom() {
+      this.phase = 'clock';
+      this.phaseStart = performance.now();
+      this.msgIndex = 0;
+      this.queue = [];
+    }
+    resize() {
+      const cssW = this.canvas.parentElement.clientWidth;
+      const dpr = window.devicePixelRatio || 1;
+      const pitch = Math.max(1, (cssW * dpr) / W);
+      this.pitch = pitch;
+      this.canvas.width = Math.round(W * pitch);
+      this.canvas.height = Math.round(H * pitch);
+
+      // unlit grid, drawn once
+      const grid = document.createElement('canvas');
+      grid.width = this.canvas.width; grid.height = this.canvas.height;
+      const g = grid.getContext('2d');
+      g.fillStyle = '#000'; g.fillRect(0, 0, grid.width, grid.height);
+      g.fillStyle = '#261703';
+      const r = pitch * 0.36;
+      for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+        g.beginPath(); g.arc((x + .5) * pitch, (y + .5) * pitch, r, 0, Math.PI * 2); g.fill();
+      }
+      this.grid = grid;
+
+      // lit dot sprite with soft halo
+      const s = Math.ceil(pitch * 3);
+      const sprite = document.createElement('canvas');
+      sprite.width = sprite.height = s;
+      const sc = sprite.getContext('2d');
+      const halo = sc.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+      halo.addColorStop(0, 'rgba(255,150,20,.45)');
+      halo.addColorStop(1, 'rgba(255,120,0,0)');
+      sc.fillStyle = halo; sc.fillRect(0, 0, s, s);
+      const core = sc.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, pitch * 0.42);
+      core.addColorStop(0, '#ffd27a');
+      core.addColorStop(0.6, '#ffa31a');
+      core.addColorStop(1, '#e07b00');
+      sc.fillStyle = core;
+      sc.beginPath(); sc.arc(s / 2, s / 2, pitch * 0.42, 0, Math.PI * 2); sc.fill();
+      this.sprite = sprite; this.spriteSize = s;
+    }
+    compose(now) {
+      const buf = this.buf; buf.fill(0);
+      const data = state[this.key];
+      const trains = data.trains.filter(t => t.eta > Date.now() - 30e3).slice(0, 3);
+
+      if (data.mode === 'connecting') {
+        drawText(buf, 'Please wait', 2, ROW_Y[0]);
+      } else if (!trains.length) {
+        drawText(buf, 'No trains in the next hour', 2, ROW_Y[0]);
+      }
+      trains.forEach((t, i) => {
+        const y = ROW_Y[i];
+        const label = minsLabel(t.eta);
+        const lw = measure(label);
+        drawText(buf, String(i + 1), 2, y);
+        drawText(buf, fitDest(t.dest, W - 12 - lw - 8), 12, y);
+        drawText(buf, label, W - 2 - lw, y);
+      });
+
+      // bottom line: clock, then any service messages scrolling through
+      const y = ROW_Y[3];
+      const msgs = data.messages;
+      const elapsed = now - this.phaseStart;
+      if (this.phase === 'clock') {
+        const clock = clockFmt.format(new Date());
+        drawText(buf, clock, Math.round((W - measure(clock)) / 2), y);
+        if (msgs.length && elapsed > 9000) { this.phase = 'msg'; this.phaseStart = now; this.queue = msgs.slice(); this.msgIndex = 0; }
+      } else {
+        const text = this.queue[this.msgIndex] || '';
+        const tw = measure(text);
+        if (reduceMotion) {
+          drawText(buf, fitDest(text, W - 4), 2, y);
+          if (elapsed > 6000) this.nextMessage(now);
+        } else {
+          const x = Math.round(W - elapsed * 0.036);
+          drawText(buf, text, x, y);
+          if (x + tw < 0) this.nextMessage(now);
+        }
+      }
+    }
+    nextMessage(now) {
+      this.msgIndex++;
+      this.phaseStart = now;
+      if (this.msgIndex >= this.queue.length) { this.phase = 'clock'; this.msgIndex = 0; }
+    }
+    paint() {
+      const { ctx, pitch, sprite, spriteSize, buf } = this;
+      ctx.drawImage(this.grid, 0, 0);
+      const off = spriteSize / 2;
+      for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+        if (buf[y * W + x]) ctx.drawImage(sprite, (x + .5) * pitch - off, (y + .5) * pitch - off);
+      }
+    }
+  }
+
+  var boards = [new Board('board-P4', 'P4')];
+  const centralBoard = new Board('board-CL', 'CL');
+  const visibleBoards = () => centralShown ? [boards[0], centralBoard] : boards;
+
+  function describe() {
+    const parts = [];
+    const list = [['P4', 'Acton Main Line eastbound']];
+    if (centralShown) list.push(['CL', 'North Acton Central line eastbound']);
+    for (const [key, name] of list) {
+      const t = state[key].trains.filter(t => t.eta > Date.now() - 30e3).slice(0, 3);
+      const text = t.length ? t.map(x => `${x.dest} ${minsLabel(x.eta)}`).join(', ') : 'no trains in the next hour';
+      const full = `${name}: ${text}.` + (state[key].messages.length ? ' ' + state[key].messages.join('. ') + '.' : '');
+      document.getElementById('board-' + key).setAttribute('aria-label', full);
+      parts.push(full);
+    }
+    const sr = document.getElementById('sr');
+    const joined = parts.join(' ');
+    if (sr.textContent !== joined) sr.textContent = joined;
+  }
+
+  let lastSecond = 0;
+  function frame(now) {
+    visibleBoards().forEach(b => { b.compose(now); b.paint(); });
+    if (now - lastSecond > 15000) { describe(); lastSecond = now; }
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  refresh();
+  setInterval(refresh, 30000);
+  setInterval(refreshCentral, 30000);
+
+  // ---------- Central line toggle ----------
+  const toggle = document.getElementById('toggle');
+  const centralWrap = document.getElementById('central-wrap');
+  function setCentral(on) {
+    centralShown = on;
+    centralWrap.hidden = !on;
+    document.body.classList.toggle('dual', on);
+    toggle.textContent = on ? 'Hide Central line' : 'Show Central line';
+    toggle.setAttribute('aria-pressed', String(on));
+    history.replaceState(null, '', on ? '#central' : location.pathname + location.search);
+    if (on) { centralBoard.resetBottom(); refreshCentral(); }
+    updateStatus();
+    describe();
+  }
+  toggle.addEventListener('click', e => { e.stopPropagation(); setCentral(!centralShown); });
+  if (location.hash === '#central') setCentral(true);
+
+  // Show the button and cursor only while the mouse is moving
+  let idleTimer;
+  function wake() {
+    document.body.classList.remove('idle');
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => document.body.classList.add('idle'), 2500);
+  }
+  ['mousemove', 'touchstart', 'keydown'].forEach(ev => document.addEventListener(ev, wake, { passive: true }));
+
+  // Keep the display from sleeping where the browser supports it
+  async function stayAwake() {
+    try { if ('wakeLock' in navigator) await navigator.wakeLock.request('screen'); } catch (e) {}
+  }
+  stayAwake();
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) stayAwake(); });
+
+  // Click or tap anywhere to toggle fullscreen
+  document.addEventListener('click', () => {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else document.documentElement.requestFullscreen?.().catch(() => {});
+  });
+})();
+</script>
+</body>
+</html>
