@@ -36,6 +36,13 @@
     width: min(96vw, calc(96vh * 192 / 45));
   }
   canvas { display: block; width: 100%; height: auto; }
+  /* portrait: the tall board sits at the top, leaving room for the controls underneath */
+  body.portrait { box-sizing: border-box; padding: calc(10px + env(safe-area-inset-top)) 0 calc(120px + env(safe-area-inset-bottom)); }
+  body.portrait .screen {
+    width: min(calc(100vw - 16px), calc((100vh - 150px - env(safe-area-inset-top) - env(safe-area-inset-bottom)) * 88 / 145));
+    width: min(calc(100vw - 16px), calc((100dvh - 150px - env(safe-area-inset-top) - env(safe-area-inset-bottom)) * 88 / 145));
+  }
+  body.portrait #caption { display: none; }
 
   /* controls: shown only while the pointer is moving */
   .chrome { transition: opacity .4s; }
@@ -65,7 +72,12 @@
   #favs::-webkit-scrollbar { display: none; }
   #favs:empty { display: none; }
   /* fade the edge while more favourites are off to the right */
-  #favs.more { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent); }
+  #favs.more { --fade-r: 32px; }
+  #favs.less { --fade-l: 32px; }
+  #favs.more, #favs.less {
+    -webkit-mask-image: linear-gradient(to right, transparent, #000 var(--fade-l, 0px), #000 calc(100% - var(--fade-r, 0px)), transparent);
+    mask-image: linear-gradient(to right, transparent, #000 var(--fade-l, 0px), #000 calc(100% - var(--fade-r, 0px)), transparent);
+  }
   #favs .chip { flex: none; }
   /* phones: favourites get their own row above the buttons */
   @media (max-width: 640px) {
@@ -275,7 +287,9 @@
   }
 
   // ---------- board geometry ----------
-  const W = 192, H = 45, ROW_Y = [2, 12, 22, 35];
+  // Board size in dots: landscape 192x45; portrait uses a taller, narrower board (see Board.layout)
+  const LW = 192, LH = 45, ROW_Y = [2, 12, 22, 35];
+  let W = LW, H = LH;
   const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   function measure(text) {
@@ -283,7 +297,8 @@
     for (const ch of text) { const g = GLYPH[ch] || GLYPH[' ']; w += g.width + 1; }
     return Math.max(0, w - 1);
   }
-  function drawText(buf, text, x, y) {
+  // x0..x1 clips horizontally (for text scrolling inside a space); bw/bh are the buffer's size
+  function drawText(buf, text, x, y, x0 = 0, x1 = W, bw = W, bh = H) {
     for (const ch of text) {
       const g = GLYPH[ch] || GLYPH[' '];
       for (let r = 0; r < 8; r++) {
@@ -292,7 +307,7 @@
         for (let c = g.left; c < g.left + g.width; c++) {
           if ((v >> (4 - c)) & 1) {
             const px = x + c - g.left, py = y + r;
-            if (px >= 0 && px < W && py >= 0 && py < H) buf[py * W + px] = 1;
+            if (px >= x0 && px < x1 && px < bw && py >= 0 && py < bh) buf[py * bw + px] = 1;
           }
         }
       }
@@ -565,6 +580,8 @@
   }
 
   const APPROACH_MODES = new Set(['tube', 'dlr']);
+  const PORTRAIT_TRAINS = 5, PW = 88, PH = 26 + PORTRAIT_TRAINS * 19 + 24;
+  const dateFmt = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', weekday: 'short', day: 'numeric', month: 'short' });
   const APPROACH_TEXT = 'STAND BACK TRAIN APPROACHING';
 
   class Board {
@@ -573,7 +590,19 @@
       this.ctx = canvas.getContext('2d');
       this.buf = new Uint8Array(W * H);
       this.resetBottom();
+      this.layout();
       new ResizeObserver(() => this.resize()).observe(canvas.parentElement);
+      addEventListener('resize', () => this.layout());
+    }
+    // Upright screens get the tall portrait board
+    layout() {
+      const portrait = innerHeight > innerWidth * 1.15;
+      if (portrait === this.portrait) return;
+      this.portrait = portrait;
+      W = portrait ? PW : LW;
+      H = portrait ? PH : LH;
+      this.buf = new Uint8Array(W * H);
+      document.body.classList.toggle('portrait', portrait);
       this.resize();
     }
     // Bottom line: board name for a few seconds, then the clock, then any service messages
@@ -608,7 +637,78 @@
       this.sprite = dotSprite(t, pitch);
       this.spriteSize = this.sprite.width;
     }
+    // Portrait: the whole screen is one tall display. Station and direction at the top,
+    // five trains on two lines each, then the clock and messages.
+    composePortrait(now) {
+      const buf = this.buf; buf.fill(0);
+      const trains = data.trains.filter(t => t.eta > Date.now() - 30e3).slice(0, PORTRAIT_TRAINS);
+      const dashes = y => { for (let x = 0; x < W; x++) if (x % 6 !== 5) buf[y * W + x] = 1; };
+      // centred if it fits, otherwise scrolls round and round inside x0..x1
+      const marquee = (text, y, x0 = 2, x1 = W - 2, centre = true) => {
+        if (measure(text) > x1 - x0) text = shortDest(text);
+        const tw = measure(text);
+        if (tw <= x1 - x0 || reduceMotion) {
+          const s = fitDest(text, x1 - x0);
+          return drawText(buf, s, centre ? Math.round((x0 + x1 - measure(s)) / 2) : x0, y, x0, x1);
+        }
+        const period = tw + 16, off = Math.floor(now * 0.024) % period;
+        drawText(buf, text, x0 - off, y, x0, x1);
+        drawText(buf, text, x0 - off + period, y, x0, x1);
+      };
+
+      if (current) {
+        marquee(current.station, 2);
+        marquee(current.bound || current.dirLabel.replace(/ · /g, ' '), 11);
+      } else marquee('Departures', 2);
+      dashes(22);
+
+      const top = 26;
+      if (!current) { marquee('Choose a', top); marquee('station', top + 9); }
+      else if (data.mode === 'connecting') marquee('Please wait', top);
+      else if (!trains.length) {
+        if (data.mode === 'offline') { marquee('Live data', top); marquee('unavailable', top + 9); }
+        else { marquee('No trains in', top); marquee('the next hour', top + 9); }
+      }
+      trains.forEach((t, i) => {
+        const y = top + i * 19, label = minsLabel(t.eta), lw = measure(label);
+        // "Hainault via Newbury Park": the via part goes on the second line, beside the time
+        const m = /^(.*?)\s+((?:via\s.*)|\(.*\))$/.exec(t.dest);
+        drawText(buf, String(i + 1), 2, y);
+        marquee(m ? m[1] : t.dest, y, 10, W - 1, false);
+        if (m) marquee(m[2], y + 9, 10, W - 2 - lw - 4, false);
+        drawText(buf, label, W - 2 - lw, y + 9);
+      });
+
+      const base = top + PORTRAIT_TRAINS * 19;
+      dashes(base + 1);
+      const y1 = base + 4, y2 = base + 15;
+      if (current && APPROACH_MODES.has(current.mode) && trains.length && minsLabel(trains[0].eta) === 'Due') {
+        this.approaching = true;
+        if (reduceMotion || Math.floor(now / 500) % 2 === 0) marquee('STAND BACK', y1);
+        marquee('TRAIN APPROACHING', y2);
+        return;
+      }
+      if (this.approaching) { this.approaching = false; this.phase = 'clock'; this.phaseStart = now; }
+      marquee(clockFmt.format(new Date()), y1);
+      // message line: the date, then any service messages scrolling through once each
+      const msgs = data.messages, elapsed = now - this.phaseStart;
+      if (this.phase !== 'msg') {
+        marquee(dateFmt.format(new Date()), y2);
+        if (msgs.length && elapsed > 9000) { this.phase = 'msg'; this.phaseStart = now; this.queue = msgs.slice(); this.msgIndex = 0; }
+      } else {
+        const text = this.queue[this.msgIndex] || '';
+        if (reduceMotion) {
+          drawText(buf, fitDest(text, W - 4), 2, y2);
+          if (elapsed > 6000) this.nextMessage(now);
+        } else {
+          const x = Math.round(W - elapsed * 0.036);
+          drawText(buf, text, x, y2);
+          if (x + measure(text) < 0) this.nextMessage(now);
+        }
+      }
+    }
     compose(now) {
+      if (this.portrait) return this.composePortrait(now);
       const buf = this.buf; buf.fill(0);
       const trains = data.trains.filter(t => t.eta > Date.now() - 30e3).slice(0, 3);
 
@@ -757,7 +857,10 @@
     favFade();
     favBar.querySelector('[aria-current="true"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }
-  const favFade = () => favBar.classList.toggle('more', favBar.scrollLeft + favBar.clientWidth < favBar.scrollWidth - 1);
+  const favFade = () => {
+    favBar.classList.toggle('more', favBar.scrollLeft + favBar.clientWidth < favBar.scrollWidth - 1);
+    favBar.classList.toggle('less', favBar.scrollLeft > 1);
+  };
   favBar.addEventListener('scroll', favFade, { passive: true });
   addEventListener('resize', favFade);
   star.addEventListener('click', () => current && toggleFav(current));
@@ -1248,19 +1351,20 @@
   const settings = document.getElementById('settings');
   const themeBox = document.getElementById('themes');
   function drawPreview(canvas, t) {
-    const buf = new Uint8Array(W * H);
+    const buf = new Uint8Array(LW * LH);
+    const put = (s, x, y) => drawText(buf, s, x, y, 0, LW, LW, LH);
     [['1', 'Epping', '2 min'], ['2', 'Loughton', '6 min']].forEach(([n, dest, mins], i) => {
-      drawText(buf, n, 2, ROW_Y[i]); drawText(buf, dest, 12, ROW_Y[i]); drawText(buf, mins, W - 2 - measure(mins), ROW_Y[i]);
+      put(n, 2, ROW_Y[i]); put(dest, 12, ROW_Y[i]); put(mins, LW - 2 - measure(mins), ROW_Y[i]);
     });
-    drawText(buf, '17:28:41', Math.round((W - measure('17:28:41')) / 2), ROW_Y[3]);
-    const pitch = Math.max(1, (canvas.clientWidth * (window.devicePixelRatio || 1)) / W);
-    canvas.width = Math.round(W * pitch); canvas.height = Math.round(H * pitch);
+    put('17:28:41', Math.round((LW - measure('17:28:41')) / 2), ROW_Y[3]);
+    const pitch = Math.max(1, (canvas.clientWidth * (window.devicePixelRatio || 1)) / LW);
+    canvas.width = Math.round(LW * pitch); canvas.height = Math.round(LH * pitch);
     const g = canvas.getContext('2d');
     g.fillStyle = '#000'; g.fillRect(0, 0, canvas.width, canvas.height);
     const sprite = dotSprite(t, pitch), off = sprite.width / 2;
     g.fillStyle = t.unlit;
-    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-      if (buf[y * W + x]) g.drawImage(sprite, (x + .5) * pitch - off, (y + .5) * pitch - off);
+    for (let y = 0; y < LH; y++) for (let x = 0; x < LW; x++) {
+      if (buf[y * LW + x]) g.drawImage(sprite, (x + .5) * pitch - off, (y + .5) * pitch - off);
       else { g.beginPath(); g.arc((x + .5) * pitch, (y + .5) * pitch, pitch * .36, 0, Math.PI * 2); g.fill(); }
     }
   }
