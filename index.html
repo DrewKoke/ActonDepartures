@@ -2,8 +2,18 @@
 <html lang="en-GB">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Departures</title>
+<meta name="description" content="Live Tube, Elizabeth line, Overground, DLR and tram departures on a dot-matrix board.">
+<meta name="theme-color" content="#000000">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Departures">
 <style>
   /* UI colours; the board's own dot colours live in THEMES in the script, which sets these too */
   :root {
@@ -34,7 +44,8 @@
 
   #caption {
     position: fixed;
-    top: 14px; left: 16px; right: 16px;
+    top: calc(14px + env(safe-area-inset-top));
+    left: calc(16px + env(safe-area-inset-left)); right: calc(16px + env(safe-area-inset-right));
     margin: 0;
     text-align: center;
     color: var(--dim);
@@ -42,7 +53,8 @@
   }
   #bar {
     position: fixed;
-    left: 16px; right: 16px; bottom: 16px;
+    left: calc(16px + env(safe-area-inset-left)); right: calc(16px + env(safe-area-inset-right));
+    bottom: calc(16px + env(safe-area-inset-bottom));
     display: flex; align-items: center; gap: 8px;
   }
   #favs {
@@ -70,7 +82,7 @@
 
   #status {
     position: fixed;
-    left: 0; right: 0; bottom: 64px;
+    left: 0; right: 0; bottom: calc(64px + env(safe-area-inset-bottom));
     margin: 0;
     text-align: center;
     color: var(--faint);
@@ -810,6 +822,79 @@
     return el('li', { className: 'fav-edit' }, el('span', { className: 'arrows' }, up, down), swatch, name, remove);
   }
 
+  // ---------- moving favourites to another device ----------
+  // The link carries the favourites (and their colours) in its #import= part; nothing is sent anywhere.
+  const toB64 = s => btoa(String.fromCharCode(...new TextEncoder().encode(s))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const fromB64 = s => new TextDecoder().decode(Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0)));
+  const str = v => typeof v === 'string' ? v : '';
+  function cleanFav(f) {
+    if (!f || typeof f !== 'object' || !str(f.naptan) || !str(f.station) || !(str(f.line) || Array.isArray(f.lines))) return null;
+    const b = {};
+    for (const k of ['naptan', 'station', 'stopName', 'line', 'lineName', 'mode', 'bound', 'dir', 'platform', 'dirLabel', 'short', 'name']) if (str(f[k])) b[k] = f[k];
+    if (Array.isArray(f.lines)) b.lines = f.lines.filter(x => typeof x === 'string');
+    if (f.via && str(f.via.naptan) && str(f.via.name)) b.via = { naptan: f.via.naptan, name: f.via.name };
+    b.line ||= b.lines?.[0];
+    b.dirLabel ||= b.bound || b.dir || '';
+    b.short ||= b.station;
+    if (!b.line) return null;
+    return { b, theme: THEMES[f.theme] ? f.theme : '' };
+  }
+  const shareLink = () => `${location.origin}${location.pathname}#import=${toB64(JSON.stringify(favs.map(f => ({ ...f, theme: boardThemes[keyOf(f)] }))))}`;
+  function readImport(text) {
+    const m = /#import=([\w-]+)/.exec(text || '');
+    if (!m) return null;
+    try { return JSON.parse(fromB64(m[1])).map(cleanFav).filter(Boolean); } catch (e) { return null; }
+  }
+
+  async function shareFavs(button) {
+    const url = shareLink();
+    const say = text => { const n = results.querySelector('.share-note'); if (n) n.textContent = text; };
+    try {
+      if (navigator.share && matchMedia('(pointer: coarse)').matches) { await navigator.share({ title: 'My departure boards', url }); return; }
+      await navigator.clipboard.writeText(url);
+      say('Link copied. Open it on the other device, or paste it into the search box of the installed app.');
+    } catch (e) {
+      if (e.name === 'AbortError') return;
+      const box = el('input', { type: 'text', value: url, readOnly: true });
+      box.setAttribute('aria-label', 'Favourites link');
+      results.querySelector('.share-note')?.replaceWith(el('p', { className: 'note share-note' }, 'Copy this link, then open it on the other device or paste it into the installed app’s search box:', box));
+      box.select();
+    }
+  }
+
+  function offerImport(list) {
+    if (!picker.open) picker.showModal();
+    view = 'import'; openToken = null;
+    backBtn.hidden = false; searchWrap.hidden = true;
+    pickerTitle.textContent = 'Add favourites';
+    const fresh = list.filter(x => !isFav(x.b));
+    const add = el('button', { type: 'button', className: 'primary', textContent: fresh.length ? `Add ${fresh.length} favourite${fresh.length > 1 ? 's' : ''}` : 'Done' });
+    add.addEventListener('click', () => {
+      for (const { b, theme: th } of fresh) {
+        favs.push(b);
+        if (th && th !== 'amber') boardThemes[keyOf(b)] = th;
+      }
+      store.set('boardThemes', boardThemes);
+      saveFavs();
+      q.value = '';
+      showHome();
+    });
+    results.replaceChildren(
+      el('p', { className: 'note', textContent: !fresh.length
+        ? 'All of these boards are already in your favourites.'
+        : fresh.length === list.length
+          ? 'This link has these boards. Add them to your favourites on this device?'
+          : `${list.length - fresh.length} of these boards are already in your favourites; the other ${fresh.length} will be added.` }),
+      el('ul', {}, ...list.map(({ b }) => {
+        const row = el('li', { className: 'row' }, el('span', { className: 'main' }, el('span', { className: 'swatch' }),
+          el('span', { className: 'text' }, el('span', { textContent: favName(b) }), el('span', { className: 'sub', textContent: titleOf(b) + (isFav(b) ? ' · already added' : '') }))));
+        row.querySelector('.swatch').style.background = swatchFor(b);
+        return row;
+      })),
+      el('div', { className: 'actions' }, add));
+    add.focus();
+  }
+
   let editing = false, view = 'home', stationView = null;
   function showHome() {
     backBtn.hidden = true; searchWrap.hidden = false; openToken = null; view = 'home';
@@ -826,7 +911,10 @@
         showHome();
         (editing ? results.querySelector('.fav-edit input') : results.querySelector('h3 button'))?.focus();
       });
-      parts.push(el('h3', {}, el('span', { textContent: 'Favourites' }), edit),
+      const share = el('button', { type: 'button', textContent: 'Share', hidden: editing });
+      share.setAttribute('aria-label', 'Copy a link to move these favourites to another device');
+      share.addEventListener('click', () => shareFavs(share));
+      parts.push(el('h3', {}, el('span', { textContent: 'Favourites' }), share, edit),
         el('ul', {}, ...favs.map((f, i) => editing ? favEditRow(f, i) : boardRow(f, titleOf(f), { removable: true }))));
     }
     parts.push(el('p', { className: 'note', textContent: editing
@@ -834,6 +922,7 @@
       : favs.length
         ? 'Search for a station, or tap Near me, to add another board.'
         : 'Search for a station or tap Near me, pick a direction, then tap ☆ to keep it here for next time.' }));
+    if (favs.length && !editing) parts.push(el('p', { className: 'note share-note' }));
     results.replaceChildren(...parts);
   }
 
@@ -986,7 +1075,10 @@
     }
   }
   let searchTimer;
-  q.addEventListener('input', () => { view = 'home'; openToken = null; clearTimeout(searchTimer); searchTimer = setTimeout(search, 250); });
+  q.addEventListener('input', () => {
+    const list = readImport(q.value);
+    if (list && list.length) { clearTimeout(searchTimer); return offerImport(list); }
+    view = 'home'; openToken = null; clearTimeout(searchTimer); searchTimer = setTimeout(search, 250); });
   q.addEventListener('keydown', e => { if (e.key === 'Enter') { clearTimeout(searchTimer); search(); } });
 
   // Work out which line + direction boards a station offers, from the trains it has right now
@@ -1124,6 +1216,7 @@
     q.focus();
   }
   backBtn.addEventListener('click', () => {
+    if (view === 'import') q.value = '';
     if (view === 'trains' && stationView) {
       view = 'station';
       searchWrap.hidden = true;
@@ -1191,7 +1284,9 @@
 
   // ---------- start: link > last board > picker ----------
   async function start() {
-    const hash = decodeURIComponent(location.hash.slice(1));
+    const imported = readImport(location.hash);
+    if (imported) history.replaceState(null, '', location.pathname + location.search);
+    const hash = imported ? '' : decodeURIComponent(location.hash.slice(1));
     const last = store.get('last', null);
     const known = favs.concat(last ? [last] : []);
     let b = hash && known.find(x => keyOf(x) === hash);
@@ -1226,8 +1321,16 @@
     renderChrome();
     describe();
     if (b) show(b); else openPicker();
+    if (imported && imported.length) offerImport(imported);
   }
   start();
+  // a favourites link opened in a tab that already has the app
+  window.addEventListener('hashchange', () => {
+    const list = readImport(location.hash);
+    if (!list) return;
+    history.replaceState(null, '', current ? '#' + keyOf(current) : location.pathname + location.search);
+    if (list.length) offerImport(list);
+  });
 
   // Show the controls and cursor only while the pointer is moving
   let idleTimer;
@@ -1244,6 +1347,9 @@
   }
   stayAwake();
   document.addEventListener('visibilitychange', () => { if (!document.hidden) stayAwake(); });
+
+  // Installable app: keep the page itself available offline
+  if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('sw.js').catch(() => {});
 
   // Click or tap the board to toggle fullscreen
   document.addEventListener('click', e => {
