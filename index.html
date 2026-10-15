@@ -204,8 +204,9 @@
     <button id="settings-close" type="button" aria-label="Close">✕</button>
   </div>
   <div class="dlg-body">
-    <h3><span>Board colour</span></h3>
-    <div class="themes" id="themes" role="group" aria-label="Board colour"></div>
+    <h3><span>Colour for this board</span></h3>
+    <div class="themes" id="themes" role="group" aria-label="Colour for this board"></div>
+    <p class="note" id="theme-note"></p>
   </div>
 </dialog>
 <div class="sr-only" aria-live="polite" id="sr"></div>
@@ -298,7 +299,9 @@
     red:   { name: 'Red', unlit: '#260707', core: ['#ffc2b5', '#ff4430', '#c8180b'], halo: 'rgba(255,60,40,.42)', fade: 'rgba(230,30,10,0)',
              ui: { text: '#ff7a66', strong: '#ffb3a6', dim: '#d9503d', muted: '#a04c40', faint: '#6e3b33', border: '#4a1a14', 'border-hi': '#8a2c20', accent: '#ff4430', panel: '#0d0403', hl: '#1d0806', 'chip-on': '#2b0c08' } }
   };
-  let theme = THEMES[store.get('theme', 'amber')] ? store.get('theme', 'amber') : 'amber';
+  // Each board can have its own colour (stored on this device, by board); others are amber
+  let theme = 'amber';
+  const boardThemes = store.get('boardThemes', {});
   function applyTheme() {
     for (const [k, v] of Object.entries(THEMES[theme].ui)) document.documentElement.style.setProperty('--' + k, v);
   }
@@ -687,6 +690,8 @@
 
   function show(b) {
     current = b;
+    const t = THEMES[boardThemes[keyOf(b)]] ? boardThemes[keyOf(b)] : 'amber';
+    if (t !== theme) { theme = t; applyTheme(); board.resize(); }
     data = { trains: [], messages: [], mode: 'connecting', updated: 0 };
     board.resetBottom(`${b.station} ${b.bound || b.dirLabel.replace(/ · /g, ' ')}${b.via ? ' calling at ' + b.via.name : ''}`);
     store.set('last', b);
@@ -711,6 +716,7 @@
   function renderChrome() {
     caption.textContent = current ? titleOf(current) : '';
     star.hidden = !current;
+    document.getElementById('gear').hidden = !current;
     const on = isFav(current);
     star.setAttribute('aria-pressed', String(on));
     star.textContent = on ? '★ Favourite' : '☆ Favourite';
@@ -1157,7 +1163,8 @@
       btn.setAttribute('aria-pressed', String(id === theme));
       btn.addEventListener('click', () => {
         theme = id;
-        store.set('theme', id);
+        if (id === 'amber') delete boardThemes[keyOf(current)]; else boardThemes[keyOf(current)] = id;
+        store.set('boardThemes', boardThemes);
         applyTheme();
         board.resize();
         renderThemes();
@@ -1167,7 +1174,10 @@
       return btn;
     }));
   }
-  document.getElementById('gear').addEventListener('click', () => { renderThemes(); settings.showModal(); themeBox.querySelector('[aria-pressed="true"]')?.focus(); });
+  document.getElementById('gear').addEventListener('click', () => {
+    if (!current) return;
+    document.getElementById('theme-note').textContent = `${favs.find(f => keyOf(f) === keyOf(current)) ? favName(favs.find(f => keyOf(f) === keyOf(current))) : titleOf(current)}. Other boards keep their own colours.`;
+    renderThemes(); settings.showModal(); themeBox.querySelector('[aria-pressed="true"]')?.focus(); });
   document.getElementById('settings-close').addEventListener('click', () => settings.close());
   settings.addEventListener('click', e => { if (e.target === settings) settings.close(); });
 
