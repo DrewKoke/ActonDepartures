@@ -268,8 +268,14 @@
   // "bound" (Eastbound etc.) comes from the platform name where TfL gives one,
   // otherwise "dir" is TfL's inbound/outbound, or "all" at the end of a line
   // where every departure goes the same way.
-  const dirKey = b => b.bound ? 'b:' + b.bound : 'd:' + b.dir;
-  const keyOf = b => `${b.naptan}/${b.line}/${dirKey(b)}`;
+  // A platform board ("platform" set) instead shows every line in "lines" that uses that platform.
+  const dirKey = b => b.platform ? 'p:' + b.platform : b.bound ? 'b:' + b.bound : 'd:' + b.dir;
+  const linesOf = b => b.lines || [b.line];
+  const keyOf = b => `${b.naptan}/${linesOf(b).join('+')}/${dirKey(b)}`;
+  const tidyPlatform = p => (p || '').replace(/\s+/g, ' ').trim();
+  const platformLabel = p => { const bound = boundOf(p), n = platformOf(p); return [bound, n && 'Platform ' + n].filter(Boolean).join(' · '); };
+  const SHORT_LINES = { 'hammersmith-city': 'H&C', 'waterloo-city': 'W&C' };
+  const shortLine = id => SHORT_LINES[id] || id[0].toUpperCase() + id.slice(1);
   const dirName = d => d === 'all' ? 'All departures' : d[0].toUpperCase() + d.slice(1);
   const titleOf = b => `${b.station} · ${b.lineName} · ${b.dirLabel}`;
 
@@ -305,7 +311,7 @@
         if (!key) continue;
         const sched = new Date(t.scheduledTimeOfDeparture || t.scheduledTimeOfArrival).getTime();
         const eta = new Date(t.estimatedTimeOfDeparture || t.estimatedTimeOfArrival || t.scheduledTimeOfDeparture || t.scheduledTimeOfArrival).getTime();
-        out.push({ key, dest: cleanName(t.destinationName || 'Check front of train'), eta, sched,
+        out.push({ key, platform: tidyPlatform(t.platformName), dest: cleanName(t.destinationName || 'Check front of train'), eta, sched,
                    cancelled: t.departureStatus === 'Cancelled', cause: t.cause });
       }
     } else {
@@ -319,7 +325,7 @@
         const eta = new Date(t.expectedArrival).getTime();
         if (eta < now - 30e3) continue;
         const id = t.vehicleId && t.vehicleId !== '000' ? t.vehicleId : name + eta;
-        if (!seen.has(id) || seen.get(id).eta > eta) seen.set(id, { key, dest: name, eta, sched: eta });
+        if (!seen.has(id) || seen.get(id).eta > eta) seen.set(id, { key, platform: tidyPlatform(t.platformName), dest: name, eta, sched: eta });
       }
       out.push(...seen.values());
     }
@@ -344,9 +350,11 @@
     const now = Date.now();
     const want = dirKey(b);
     const trains = [], notices = [];
-    const services = servicesAt(b.naptan, [b.station, b.stopName].filter(Boolean), b.line, arrivals, departures);
+    const names = [b.station, b.stopName].filter(Boolean);
+    const services = linesOf(b).flatMap(line =>
+      servicesAt(b.naptan, names, line, arrivals, departures[line]).map(s => ({ ...s, line })));
     for (const s of services) {
-      if (b.dir !== 'all' && s.key !== want) continue;
+      if (b.platform ? s.platform !== b.platform : b.dir !== 'all' && s.key !== want) continue;
       if (s.cancelled) {
         if (s.sched > now - 60e3 && s.sched < now + 90 * 60e3) {
           const why = (s.cause || '').replace(/^This service has been cancelled\s*/i, '').replace(/\.$/, '');
@@ -355,7 +363,7 @@
         continue;
       }
       if (s.eta < now - 30e3) continue;
-      trains.push({ dest: s.dest, eta: s.eta });
+      trains.push({ dest: s.dest, eta: s.eta, line: s.line });
       const late = Math.round((s.eta - s.sched) / 60e3);
       if (late >= 2 && s.eta < now + 60 * 60e3) {
         notices.push({ at: s.sched, text: `The ${hmFmt.format(s.sched)} ${s.dest} service is running ${late} min late` });
@@ -363,6 +371,10 @@
     }
 
     trains.sort((a, b) => a.eta - b.eta);
+    // On a shared platform, say which line when two lines go to the same place
+    const linesTo = {};
+    for (const tr of trains) (linesTo[tr.dest] ||= new Set()).add(tr.line);
+    for (const tr of trains) if (linesTo[tr.dest].size > 1) tr.dest += ` (${shortLine(tr.line)})`;
     notices.sort((a, b) => a.at - b.at);
     const messages = [...new Set(notices.map(n => n.text).concat(messagesFromStatus(lineStatus)))].slice(0, 4);
     return { trains, messages, mode: 'live', updated: now };
@@ -372,12 +384,15 @@
     const b = current;
     if (!b) return;
     try {
-      const [arrivals, departures, lineStatus] = await Promise.all([
+      const lines = linesOf(b);
+      const [arrivals, deps, lineStatus] = await Promise.all([
         getJSON(`/StopPoint/${b.naptan}/Arrivals`),
-        TIMETABLED.has(b.mode) ? getJSON(`/StopPoint/${b.naptan}/ArrivalDepartures?lineIds=${b.line}`).catch(() => null) : null,
-        getJSON(`/Line/${b.line}/Status`).catch(() => [])
+        Promise.all(lines.map(line => TIMETABLED.has(b.mode)
+          ? getJSON(`/StopPoint/${b.naptan}/ArrivalDepartures?lineIds=${line}`).catch(() => null) : null)),
+        getJSON(`/Line/${lines.join(',')}/Status`).catch(() => [])
       ]);
       if (current !== b) return;
+      const departures = Object.fromEntries(lines.map((line, i) => [line, deps[i]]));
       data = build(b, arrivals, departures, lineStatus);
     } catch (e) {
       if (current !== b) return;
@@ -557,7 +572,7 @@
   function show(b) {
     current = b;
     data = { trains: [], messages: [], mode: 'connecting', updated: 0 };
-    board.resetBottom(`${b.station} ${b.bound || b.dirLabel}`);
+    board.resetBottom(`${b.station} ${b.bound || b.dirLabel.replace(/ · /g, ' ')}`);
     store.set('last', b);
     history.replaceState(null, '', '#' + keyOf(b));
     document.title = `${b.station} ${b.bound || ''} departures`.replace(/\s+/g, ' ');
@@ -613,7 +628,10 @@
     const main = el('button', { type: 'button', className: 'main' },
       el('span', { className: 'swatch' }),
       el('span', { className: 'text' }, el('span', { textContent: removable ? titleOf(b) : b.dirLabel }), sub ? el('span', { className: 'sub', textContent: sub }) : ''));
-    main.firstChild.style.background = lineColour(b.line, b.mode);
+    const colours = linesOf(b).map(l => lineColour(l, b.mode));
+    main.firstChild.style.background = colours.length > 1
+      ? `linear-gradient(${colours.map((c, i) => `${c} ${i / colours.length * 100}% ${(i + 1) / colours.length * 100}%`).join(', ')})`
+      : colours[0];
     main.addEventListener('click', () => { show(b); picker.close(); });
     const fav = el('button', { type: 'button', className: 'icon' });
     const paint = () => {
@@ -709,19 +727,27 @@
       ]);
       if (token !== openToken || searchWrap.hidden === false) return;
       const options = new Map();
+      const platforms = new Map();   // naptan|platform -> { naptan, stopName, platform, lines, dests }
       lineInfo.forEach((info, i) => {
         const names = [station, info.stopName];
         const services = servicesAt(info.naptan, names, info.line, arrivals[stops.findIndex(s => s.id === info.naptan)], departures[i]);
         const base = { naptan: info.naptan, station, stopName: info.stopName, line: info.line, lineName: info.lineName, mode: info.mode };
         for (const sv of services) {
           if (sv.cancelled) continue;
+          if (platformOf(sv.platform)) {
+            const pk = info.naptan + '|' + sv.platform;
+            if (!platforms.has(pk)) platforms.set(pk, { naptan: info.naptan, stopName: info.stopName, mode: info.mode, platform: sv.platform, lines: new Map(), dests: new Map() });
+            const pl = platforms.get(pk);
+            pl.lines.set(info.line, info.lineName.replace(/ line$/i, ''));
+            if (!/check front/i.test(sv.dest)) pl.dests.set(shortDest(sv.dest), (pl.dests.get(shortDest(sv.dest)) || 0) + 1);
+          }
           const [kind, value] = [sv.key.slice(0, 1), sv.key.slice(2)];
           const b = { ...base, bound: kind === 'b' ? value : '', dir: kind === 'd' ? value : '' };
           const k = keyOf(b);
           if (!options.has(k)) options.set(k, { b, dests: new Map() });
           const dest = shortDest(sv.dest);
           const o = options.get(k);
-          if (dest) o.dests.set(dest, (o.dests.get(dest) || 0) + 1);
+          if (dest && !/check front/i.test(dest)) o.dests.set(dest, (o.dests.get(dest) || 0) + 1);
         }
       });
       // Lines with nothing running right now still get plain choices, unless the only
@@ -759,7 +785,22 @@
         if (o.quiet) subs.push('no trains right now');
         (groups[b.lineName] ||= []).push(boardRow(b, subs.join(' · ')));
       }
-      results.replaceChildren(...Object.entries(groups).flatMap(([name, rows]) => [el('h3', { textContent: name }), el('ul', {}, ...rows)]));
+      // Platforms that more than one line uses get a combined board
+      const shared = [...platforms.values()].filter(pl => pl.lines.size > 1)
+        .sort((a, b) => a.platform.localeCompare(b.platform, 'en', { numeric: true }));
+      const sharedRows = shared.map(pl => {
+        const lines = [...pl.lines.keys()].sort();
+        const label = platformLabel(pl.platform);
+        const b = { naptan: pl.naptan, station, stopName: pl.stopName, line: lines[0], lines,
+                    lineName: lines.map(l => pl.lines.get(l)).join(', '), mode: pl.mode,
+                    platform: pl.platform, bound: '', dir: '', dirLabel: label,
+                    short: `${station} ${boundOf(pl.platform) ? boundOf(pl.platform) + ' ' : ''}P${platformOf(pl.platform)}` };
+        const top = [...pl.dests.entries()].sort((a, b) => b[1] - a[1]).map(e => e[0]).slice(0, 3);
+        return boardRow(b, [b.lineName, top.length && 'towards ' + top.join(', ')].filter(Boolean).join(' · '));
+      });
+      results.replaceChildren(
+        ...(sharedRows.length ? [el('h3', { textContent: 'Shared platforms' }), el('ul', {}, ...sharedRows)] : []),
+        ...Object.entries(groups).flatMap(([name, rows]) => [el('h3', { textContent: name }), el('ul', {}, ...rows)]));
       results.querySelector('.main')?.focus();
     } catch (e) {
       results.replaceChildren(el('p', { className: 'note', textContent: 'Couldn’t reach TfL. Check your connection and try again.' }));
@@ -791,14 +832,24 @@
     const last = store.get('last', null);
     const known = favs.concat(last ? [last] : []);
     let b = hash && known.find(x => keyOf(x) === hash);
-    if (!b && /^[^/]+\/[^/]+\/[bd]:.+$/.test(hash)) {
+    if (!b && /^[^/]+\/[^/]+\/[bdp]:.+$/.test(hash)) {
       // a shared link for a board this browser hasn't seen: rebuild it from TfL
-      const [naptan, line, sel] = hash.split('/');
+      const [naptan, line, ...rest] = hash.split('/');
+      const sel = rest.join('/');
       try {
         const s = await getJSON(`/StopPoint/${naptan}`);
+        const lines = line.split('+');
+        const station = cleanName(s.commonName);
+        const g0 = (s.lineModeGroups || []).find(x => x.lineIdentifier.includes(lines[0]));
+        if (sel.startsWith('p:') && g0) {
+          const platform = sel.slice(2);
+          const names = Object.fromEntries((s.lines || []).map(l => [l.id, l.name]));
+          b = { naptan, station, line: lines[0], lines, lineName: lines.map(l => names[l] || l).join(', '), mode: g0.modeName,
+                platform, bound: '', dir: '', dirLabel: platformLabel(platform), short: `${station} P${platformOf(platform)}` };
+        }
         const l = (s.lines || []).find(x => x.id === line);
         const g = (s.lineModeGroups || []).find(x => x.lineIdentifier.includes(line));
-        if (l && g) {
+        if (!b && l && g) {
           const bound = sel.startsWith('b:') ? sel.slice(2) : '', dir = sel.startsWith('d:') ? sel.slice(2) : '';
           const station = cleanName(s.commonName);
           const label = bound || dirName(dir);
