@@ -123,7 +123,7 @@
   }
   .row .main:hover { color: #ffd27a; }
   .row .text { min-width: 0; display: flex; flex-direction: column; }
-  .row .text span { overflow: hidden; text-overflow: ellipsis; }
+  .row .text span { overflow: hidden; text-overflow: ellipsis; line-height: 1.4; }
   .row .sub { font-size: 12px; color: #8a6a3a; }
   .row .icon { border: 0; background: none; font-size: 17px; padding: 6px 10px; color: #8a6a3a; }
   .row .icon[aria-pressed="true"] { color: #ffd27a; }
@@ -483,9 +483,17 @@
       const msgs = data.messages;
       const elapsed = now - this.phaseStart;
       if (this.phase === 'title') {
-        const text = fitDest(this.title, W - 4);
-        drawText(buf, text, Math.round((W - measure(text)) / 2), y);
-        if (elapsed > 5000) { this.phase = 'clock'; this.phaseStart = now; }
+        // centred if it fits, otherwise scrolled through once like a service message
+        const tw = measure(this.title);
+        if (tw <= W - 4 || reduceMotion) {
+          const text = fitDest(this.title, W - 4);
+          drawText(buf, text, Math.round((W - measure(text)) / 2), y);
+          if (elapsed > 5000) { this.phase = 'clock'; this.phaseStart = now; }
+        } else {
+          const x = Math.round(W - elapsed * 0.036);
+          drawText(buf, this.title, x, y);
+          if (x + tw < 0) { this.phase = 'clock'; this.phaseStart = now; }
+        }
       } else if (this.phase === 'clock') {
         const clock = clockFmt.format(new Date());
         drawText(buf, clock, Math.round((W - measure(clock)) / 2), y);
