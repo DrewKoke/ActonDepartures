@@ -37,7 +37,7 @@
   }
   canvas { display: block; width: 100%; height: auto; }
   /* portrait: the tall board sits at the top, leaving room for the controls underneath */
-  body.portrait { justify-content: flex-start; box-sizing: border-box; padding-top: calc(10px + env(safe-area-inset-top)); }
+  body.portrait { box-sizing: border-box; padding: calc(10px + env(safe-area-inset-top)) 0 calc(120px + env(safe-area-inset-bottom)); }
   body.portrait .screen {
     width: min(calc(100vw - 16px), calc((100vh - 150px - env(safe-area-inset-top) - env(safe-area-inset-bottom)) * 88 / 145));
     width: min(calc(100vw - 16px), calc((100dvh - 150px - env(safe-area-inset-top) - env(safe-area-inset-bottom)) * 88 / 145));
@@ -72,7 +72,12 @@
   #favs::-webkit-scrollbar { display: none; }
   #favs:empty { display: none; }
   /* fade the edge while more favourites are off to the right */
-  #favs.more { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent); }
+  #favs.more { --fade-r: 32px; }
+  #favs.less { --fade-l: 32px; }
+  #favs.more, #favs.less {
+    -webkit-mask-image: linear-gradient(to right, transparent, #000 var(--fade-l, 0px), #000 calc(100% - var(--fade-r, 0px)), transparent);
+    mask-image: linear-gradient(to right, transparent, #000 var(--fade-l, 0px), #000 calc(100% - var(--fade-r, 0px)), transparent);
+  }
   #favs .chip { flex: none; }
   /* phones: favourites get their own row above the buttons */
   @media (max-width: 640px) {
@@ -852,7 +857,10 @@
     favFade();
     favBar.querySelector('[aria-current="true"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }
-  const favFade = () => favBar.classList.toggle('more', favBar.scrollLeft + favBar.clientWidth < favBar.scrollWidth - 1);
+  const favFade = () => {
+    favBar.classList.toggle('more', favBar.scrollLeft + favBar.clientWidth < favBar.scrollWidth - 1);
+    favBar.classList.toggle('less', favBar.scrollLeft > 1);
+  };
   favBar.addEventListener('scroll', favFade, { passive: true });
   addEventListener('resize', favFade);
   star.addEventListener('click', () => current && toggleFav(current));
