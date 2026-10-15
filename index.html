@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Eastbound arrivals</title>
+<title>Departures</title>
 <style>
   html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
   body {
@@ -11,40 +11,124 @@
     align-items: center;
     flex-direction: column;
     justify-content: center;
-    gap: 3vh;
+    font: 14px/1.4 system-ui, sans-serif;
+    color: #ffb84d;
   }
   body.idle { cursor: none; }
   .screen {
     /* fill the display while keeping the board's proportions */
     width: min(96vw, calc(96vh * 192 / 45));
   }
-  body.dual .screen { width: min(96vw, calc(46.5vh * 192 / 45)); }
-  .screen[hidden] { display: none; }
-  #toggle {
+  canvas { display: block; width: 100%; height: auto; }
+
+  /* controls: shown only while the pointer is moving */
+  .chrome { transition: opacity .4s; }
+  body.idle .chrome { opacity: 0; pointer-events: none; }
+  body.idle .chrome:focus-within { opacity: 1; pointer-events: auto; }
+
+  #caption {
     position: fixed;
-    right: 16px; bottom: 16px;
-    padding: 5px 10px;
-    font: 12px/1.2 system-ui, sans-serif;
+    top: 14px; left: 16px; right: 16px;
+    margin: 0;
+    text-align: center;
+    color: #c98a2a;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #bar {
+    position: fixed;
+    left: 16px; right: 16px; bottom: 16px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  #favs {
+    flex: 1; min-width: 0;
+    display: flex; gap: 6px;
+    overflow-x: auto; scrollbar-width: none;
+  }
+  #favs::-webkit-scrollbar { display: none; }
+  button {
+    font: inherit; font-size: 13px; line-height: 1.2;
+    padding: 6px 11px;
     color: #c98a2a;
     background: #000;
     border: 1px solid #4a3312;
     border-radius: 4px;
     cursor: pointer;
-    opacity: 1;
-    transition: opacity .4s;
+    white-space: nowrap;
   }
-  body.idle #toggle { opacity: 0; pointer-events: none; }
-  body.idle #toggle:focus-visible { opacity: 1; pointer-events: auto; }
-  #toggle:focus-visible { outline: 2px solid #ffa31a; outline-offset: 2px; }
-  canvas { display: block; width: 100%; height: auto; }
+  button:hover { border-color: #8a5d1c; color: #ffb84d; }
+  button:focus-visible, input:focus-visible { outline: 2px solid #ffa31a; outline-offset: 2px; }
+  .chip[aria-current="true"] { background: #2b1a04; color: #ffd27a; border-color: #8a5d1c; }
+  .chip kbd { font: inherit; opacity: .55; margin-right: 6px; }
+  #star[aria-pressed="true"] { color: #ffd27a; border-color: #8a5d1c; }
+
   #status {
     position: fixed;
-    left: 0; right: 0; bottom: 2vh;
+    left: 0; right: 0; bottom: 64px;
+    margin: 0;
     text-align: center;
-    font: 14px/1.4 system-ui, sans-serif;
     color: #6b5a3c;
   }
   #status[hidden] { display: none; }
+
+  /* picker */
+  dialog {
+    width: min(560px, calc(100vw - 32px));
+    max-height: min(640px, calc(100vh - 32px));
+    box-sizing: border-box;
+    padding: 0;
+    color: #ffb84d;
+    background: #0d0802;
+    border: 1px solid #4a3312;
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  dialog[open] { display: flex; flex-direction: column; }
+  dialog::backdrop { background: rgba(0,0,0,.7); }
+  .dlg-head {
+    display: flex; align-items: center; gap: 8px;
+    padding: 14px 16px 10px;
+  }
+  .dlg-head h2 { flex: 1; margin: 0; font-size: 16px; font-weight: 600; color: #ffd27a; }
+  .dlg-search { padding: 0 16px 12px; }
+  input[type="search"] {
+    width: 100%; box-sizing: border-box;
+    font: inherit; font-size: 16px;
+    padding: 9px 12px;
+    color: #ffd27a;
+    background: #000;
+    border: 1px solid #4a3312;
+    border-radius: 6px;
+  }
+  input::placeholder { color: #6b5a3c; }
+  .dlg-body { overflow-y: auto; padding: 0 8px 12px; }
+  .dlg-body h3 {
+    margin: 12px 8px 6px;
+    font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
+    color: #8a6a3a;
+  }
+  .dlg-body ul { list-style: none; margin: 0; padding: 0; }
+  .row {
+    display: flex; align-items: center; gap: 4px;
+    border-radius: 6px;
+  }
+  .row:hover { background: #1c1104; }
+  .row .main {
+    flex: 1; min-width: 0;
+    display: flex; align-items: center; gap: 10px;
+    text-align: left;
+    padding: 9px 8px;
+    border: 0; background: none;
+    font-size: 14px;
+    color: #ffb84d;
+  }
+  .row .main:hover { color: #ffd27a; }
+  .row .text { min-width: 0; display: flex; flex-direction: column; }
+  .row .text span { overflow: hidden; text-overflow: ellipsis; }
+  .row .sub { font-size: 12px; color: #8a6a3a; }
+  .row .icon { border: 0; background: none; font-size: 17px; padding: 6px 10px; color: #8a6a3a; }
+  .row .icon[aria-pressed="true"] { color: #ffd27a; }
+  .swatch { flex: none; width: 4px; align-self: stretch; border-radius: 2px; background: #8a6a3a; }
+  .note { margin: 12px 8px; color: #8a6a3a; }
   .sr-only {
     position: absolute; width: 1px; height: 1px; overflow: hidden;
     clip: rect(0 0 0 0); white-space: nowrap;
@@ -52,10 +136,26 @@
 </style>
 </head>
 <body class="idle">
-<div class="screen"><canvas id="board-P4" role="img" aria-label="Acton Main Line eastbound arrivals"></canvas></div>
-<div class="screen" id="central-wrap" hidden><canvas id="board-CL" role="img" aria-label="North Acton Central line eastbound arrivals"></canvas></div>
-<button id="toggle" type="button" aria-pressed="false">Show Central line</button>
+<p id="caption" class="chrome"></p>
+<div class="screen"><canvas id="board" role="img" aria-label="Departure board"></canvas></div>
 <p id="status" hidden></p>
+<div id="bar" class="chrome">
+  <div id="favs" role="toolbar" aria-label="Favourite boards"></div>
+  <button id="star" type="button" aria-pressed="false" hidden>☆ Favourite</button>
+  <button id="change" type="button">Change board</button>
+</div>
+
+<dialog id="picker" aria-labelledby="picker-title">
+  <div class="dlg-head">
+    <button id="back" type="button" hidden aria-label="Back to search">←</button>
+    <h2 id="picker-title">Choose a board</h2>
+    <button id="close" type="button" aria-label="Close">✕</button>
+  </div>
+  <div class="dlg-search" id="search-wrap">
+    <input id="q" type="search" placeholder="Search for a station" autocomplete="off" aria-label="Station name">
+  </div>
+  <div class="dlg-body" id="results" aria-live="polite"></div>
+</dialog>
 <div class="sr-only" aria-live="polite" id="sr"></div>
 
 <script>
@@ -129,155 +229,149 @@
   const clockFmt = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
   const hmFmt = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', hour: '2-digit', minute: '2-digit', hour12: false });
 
-  // ---------- data ----------
-  const URL = 'https://api.tfl.gov.uk/StopPoint/910GACTONML/ArrivalDepartures?lineIds=elizabeth';
-  const EAST = /abbey wood|shenfield|paddington|liverpool|whitechapel|canary|stratford|farringdon|tottenham|bond street|romford|ilford|custom house|woolwich/i;
-  const state = {
-    P3: { trains: [], messages: [], mode: 'connecting', updated: 0 },
-    P4: { trains: [], messages: [], mode: 'connecting', updated: 0 },
-    CL: { trains: [], messages: [], mode: 'connecting', updated: 0 }
-  };
-  let centralShown = false;
-
-  const cleanName = n => n.replace(/\s+(Rail|Underground|DLR|Elizabeth line) Station$/i, '').replace(/\s+Station$/i, '').trim();
-  const platformOf = t => {
-    if (/\b3\b/.test(t.platformName || '')) return 'P3';
-    if (/\b4\b/.test(t.platformName || '')) return 'P4';
-    return EAST.test(t.destinationName || '') ? 'P4' : 'P3';
+  // ---------- storage ----------
+  const store = {
+    get(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return d; } },
+    set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
   };
 
-  function ingest(list, mode) {
-    const now = Date.now();
-    const next = { P3: { trains: [], messages: [] }, P4: { trains: [], messages: [] } };
-    for (const t of list) {
-      const p = platformOf(t);
-      const sched = new Date(t.scheduledTimeOfArrival || t.scheduledTimeOfDeparture).getTime();
-      const eta = new Date(t.estimatedTimeOfArrival || t.estimatedTimeOfDeparture || t.scheduledTimeOfArrival || t.scheduledTimeOfDeparture).getTime();
-      const dest = cleanName(t.destinationName || 'Check front of train');
-      if (t.departureStatus === 'Cancelled') {
-        if (sched > now - 60e3 && sched < now + 90 * 60e3) {
-          const why = (t.cause || '').replace(/^This service has been cancelled\s*/i, '').replace(/\.$/, '');
-          next[p].messages.push({ at: sched, text: `The ${hmFmt.format(sched)} ${dest} service is cancelled${why ? ' ' + why : ''}` });
-        }
-        continue;
-      }
-      if (eta < now - 30e3) continue;
-      next[p].trains.push({ dest, eta });
-      const late = Math.round((eta - sched) / 60e3);
-      if (late >= 2 && eta < now + 60 * 60e3) {
-        next[p].messages.push({ at: sched, text: `The ${hmFmt.format(sched)} ${dest} service is running ${late} min late` });
-      }
-    }
-    for (const p of ['P3', 'P4']) {
-      next[p].trains.sort((a, b) => a.eta - b.eta);
-      next[p].messages.sort((a, b) => a.at - b.at);
-      next[p].messages = next[p].messages.slice(0, 4).map(m => m.text);
-      next[p].mode = mode;
-      next[p].updated = Date.now();
-      state[p] = next[p];
-    }
-    updateStatus();
-    describe();
+  // ---------- TfL API ----------
+  const API = 'https://api.tfl.gov.uk';
+  const MODES = ['tube', 'elizabeth-line', 'overground', 'dlr', 'tram'];
+  const TIMETABLED = new Set(['elizabeth-line', 'overground']);   // these also have a scheduled departures feed
+  const LINE_COLOURS = {
+    bakerloo: '#b36305', central: '#e32017', circle: '#ffd300', district: '#00782a',
+    'hammersmith-city': '#f3a9bb', jubilee: '#a0a5a9', metropolitan: '#9b0056', northern: '#000',
+    piccadilly: '#003688', victoria: '#0098d4', 'waterloo-city': '#95cdba', elizabeth: '#6950a1',
+    dlr: '#00a4a7', tram: '#5fb526', liberty: '#61686b', lioness: '#ef9600', mildmay: '#2774ae',
+    suffragette: '#5ba763', weaver: '#893b67', windrush: '#d22730'
+  };
+  const lineColour = (id, mode) => LINE_COLOURS[id] || (mode === 'overground' ? '#ee7c0e' : '#8a6a3a');
+
+  async function getJSON(path, signal) {
+    const res = await fetch(API + path, { cache: 'no-store', signal });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return res.json();
   }
 
-  // Timetable pattern used only when live data can't be reached
-  function simulated() {
-    const now = new Date();
-    const pattern = [
-      ['Heathrow Terminal 4 Rail Station', 'Platform 3', [0, 15, 30, 45]],
-      ['Heathrow Terminal 5 Rail Station', 'Platform 3', [10, 39]],
-      ['Reading Rail Station', 'Platform 3', [22, 52]],
-      ['Abbey Wood', 'Platform 4', [10, 25, 40, 55]]
-    ];
+  const cleanName = n => (n || '')
+    .replace(/\s*\((?:London|[^)]*Line)\)/gi, '')
+    .replace(/\s+(Rail|Underground|DLR|Tram|Elizabeth line)\s+Station$/i, '')
+    .replace(/\s+Station$/i, '').replace(/-Underground$/i, '').trim();
+  const shortDest = n => n.replace(/Terminals?\s/, 'T');
+  // "Eastbound - Platform 3" -> "Eastbound"; "Platform 3" -> ""
+  const boundOf = p => { const m = /^(.+?)\s+-\s+/.exec(p || ''); return m && !/^platform/i.test(m[1]) ? m[1].trim() : ''; };
+  const platformOf = p => { const v = (p || '').replace(/^.*?platform\s*/i, '').trim(); return /unknown/i.test(v) ? '' : v; };
+
+  // A board is one station stop, one line and one direction:
+  // { naptan, station, line, lineName, mode, bound | dir, dirLabel, short }
+  // "bound" (Eastbound etc.) comes from the platform name where TfL gives one,
+  // otherwise "dir" is TfL's inbound/outbound.
+  const keyOf = b => `${b.naptan}/${b.line}/${b.bound ? 'b:' + b.bound : 'd:' + b.dir}`;
+  const wantOf = b => b.bound || b.dir;
+  const trainDir = (b, t) => b.bound ? boundOf(t.platformName) : t.direction;
+  const titleOf = b => `${b.station} · ${b.lineName} · ${b.dirLabel}`;
+
+  // ---------- board state ----------
+  let current = null;
+  let data = { trains: [], messages: [], mode: 'idle', updated: 0 };
+
+  function messagesFromStatus(lineStatus) {
     const out = [];
-    const base = new Date(now); base.setSeconds(0, 0); base.setMinutes(0);
-    for (let h = 0; h < 3; h++) {
-      for (const [dest, plat, mins] of pattern) {
-        for (const m of mins) {
-          const t = new Date(base.getTime() + h * 3600e3 + m * 60e3).toISOString();
-          out.push({ destinationName: dest, platformName: plat, scheduledTimeOfArrival: t, departureStatus: 'OnTime' });
-        }
+    for (const line of lineStatus || []) {
+      for (const st of line.lineStatuses || []) {
+        if (st.statusSeverity !== 10 && st.reason) out.push(st.reason.replace(/\s+/g, ' ').trim().replace(/\.$/, ''));
       }
     }
     return out;
+  }
+
+  function build(b, arrivals, departures, lineStatus) {
+    const now = Date.now();
+    const want = wantOf(b);
+    const mine = arrivals.filter(t => t.lineId === b.line);
+    const trains = [], notices = [];
+
+    // Remember which way each destination / platform goes, so the timetable feed
+    // (which has no direction of its own) can be sorted even when no live trains are around.
+    const mapKey = `dirs:${b.naptan}:${b.line}:${b.bound ? 'b' : 'd'}`;
+    const dirs = store.get(mapKey, {});
+    for (const t of mine) {
+      const d = trainDir(b, t);
+      if (!d) continue;
+      if (t.destinationNaptanId) dirs['d:' + t.destinationNaptanId] = d;
+      const p = platformOf(t.platformName);
+      if (p) dirs['p:' + p] = d;
+    }
+    store.set(mapKey, dirs);
+
+    if (departures && departures.length) {
+      for (const t of departures) {
+        if (t.destinationNaptanId === b.naptan) continue;
+        const d = dirs['d:' + t.destinationNaptanId] || dirs['p:' + platformOf(t.platformName)];
+        if (d !== want) continue;
+        const sched = new Date(t.scheduledTimeOfDeparture || t.scheduledTimeOfArrival).getTime();
+        const eta = new Date(t.estimatedTimeOfDeparture || t.estimatedTimeOfArrival || t.scheduledTimeOfDeparture || t.scheduledTimeOfArrival).getTime();
+        const dest = cleanName(t.destinationName || 'Check front of train');
+        if (t.departureStatus === 'Cancelled') {
+          if (sched > now - 60e3 && sched < now + 90 * 60e3) {
+            const why = (t.cause || '').replace(/^This service has been cancelled\s*/i, '').replace(/\.$/, '');
+            notices.push({ at: sched, text: `The ${hmFmt.format(sched)} ${dest} service is cancelled${why ? ' ' + why : ''}` });
+          }
+          continue;
+        }
+        if (eta < now - 30e3) continue;
+        trains.push({ dest, eta });
+        const late = Math.round((eta - sched) / 60e3);
+        if (late >= 2 && eta < now + 60 * 60e3) {
+          notices.push({ at: sched, text: `The ${hmFmt.format(sched)} ${dest} service is running ${late} min late` });
+        }
+      }
+    } else {
+      const seen = new Map();
+      for (const t of mine) {
+        if (trainDir(b, t) !== want) continue;
+        if (t.destinationNaptanId === b.naptan) continue;   // terminating here, not in service beyond
+        const dest = cleanName(t.destinationName || 'Check front of train');
+        const towards = (t.towards || '').trim();
+        const name = towards && towards.toLowerCase().startsWith(dest.toLowerCase()) ? towards : (dest || towards);
+        const eta = new Date(t.expectedArrival).getTime();
+        if (eta < now - 30e3) continue;
+        const key = t.vehicleId && t.vehicleId !== '000' ? t.vehicleId : name + eta;
+        if (!seen.has(key) || seen.get(key).eta > eta) seen.set(key, { dest: name, eta });
+      }
+      trains.push(...seen.values());
+    }
+
+    trains.sort((a, b) => a.eta - b.eta);
+    notices.sort((a, b) => a.at - b.at);
+    const messages = [...new Set(notices.map(n => n.text).concat(messagesFromStatus(lineStatus)))].slice(0, 4);
+    return { trains, messages, mode: 'live', updated: now };
   }
 
   async function refresh() {
+    const b = current;
+    if (!b) return;
     try {
-      const res = await fetch(URL, { cache: 'no-store' });
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      ingest(await res.json(), 'live');
+      const [arrivals, departures, lineStatus] = await Promise.all([
+        getJSON(`/StopPoint/${b.naptan}/Arrivals`),
+        TIMETABLED.has(b.mode) ? getJSON(`/StopPoint/${b.naptan}/ArrivalDepartures?lineIds=${b.line}`).catch(() => null) : null,
+        getJSON(`/Line/${b.line}/Status`).catch(() => [])
+      ]);
+      if (current !== b) return;
+      data = build(b, arrivals, departures, lineStatus);
     } catch (e) {
-      if (state.P4.mode !== 'live' || Date.now() - state.P4.updated > 3 * 60e3) ingest(simulated(), 'timetable');
+      if (current !== b) return;
+      if (data.mode !== 'live' || Date.now() - data.updated > 3 * 60e3) data = { ...data, mode: 'offline' };
     }
-  }
-
-  // ---------- Central line, North Acton eastbound ----------
-  const CL_URL = 'https://api.tfl.gov.uk/StopPoint/940GZZLUNAN/Arrivals';
-  const CL_STATUS_URL = 'https://api.tfl.gov.uk/Line/central/Status';
-
-  function ingestCentral(list, lineStatus, mode) {
-    const now = Date.now();
-    const seen = new Map();
-    for (const t of list) {
-      if (t.lineId !== 'central' || !/eastbound/i.test(t.platformName || '')) continue;
-      if (/north acton/i.test(t.destinationName || '')) continue;   // not in service beyond here
-      const dest = cleanName(t.destinationName || 'Check front of train');
-      const towards = (t.towards || '').trim();
-      const name = towards && towards.toLowerCase().startsWith(dest.toLowerCase()) ? towards : dest;
-      const eta = new Date(t.expectedArrival).getTime();
-      if (eta < now - 30e3) continue;
-      const key = t.vehicleId || name + eta;
-      if (!seen.has(key) || seen.get(key).eta > eta) seen.set(key, { dest: name, eta });
-    }
-    const messages = [];
-    for (const line of lineStatus || []) {
-      for (const st of line.lineStatuses || []) {
-        if (st.statusSeverity !== 10 && st.reason) messages.push(st.reason.replace(/\s+/g, ' ').trim().replace(/\.$/, ''));
-      }
-    }
-    state.CL = {
-      trains: [...seen.values()].sort((a, b) => a.eta - b.eta),
-      messages: [...new Set(messages)].slice(0, 2),
-      mode,
-      updated: now
-    };
     updateStatus();
     describe();
-  }
-
-  function simulatedCentral() {
-    const out = [];
-    const base = new Date(); base.setSeconds(0, 0); base.setMinutes(0);
-    const dests = [['Epping Underground Station', 'Epping'], ['Hainault Underground Station', 'Hainault via Newbury Park']];
-    for (let m = 1, i = 0; m < 180; m += 4, i++) {
-      const [destinationName, towards] = dests[i % 2];
-      out.push({ lineId: 'central', platformName: 'Eastbound - Platform 3', destinationName, towards,
-                 expectedArrival: new Date(base.getTime() + m * 60e3).toISOString() });
-    }
-    return out;
-  }
-
-  async function refreshCentral() {
-    if (!centralShown) return;
-    try {
-      const res = await fetch(CL_URL, { cache: 'no-store' });
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      const list = await res.json();
-      let lineStatus = [];
-      try { const r = await fetch(CL_STATUS_URL, { cache: 'no-store' }); if (r.ok) lineStatus = await r.json(); } catch (e) {}
-      ingestCentral(list, lineStatus, 'live');
-    } catch (e) {
-      if (state.CL.mode !== 'live' || Date.now() - state.CL.updated > 3 * 60e3) ingestCentral(simulatedCentral(), [], 'timetable');
-    }
   }
 
   function updateStatus() {
     const el = document.getElementById('status');
-    const offline = state.P4.mode === 'timetable' || (centralShown && state.CL.mode === 'timetable');
-    if (!offline) { el.hidden = true; return; }
-    el.hidden = false;
-    el.textContent = 'Live data unavailable, showing the usual timetable. Open this file directly in a browser for live times.';
+    el.hidden = data.mode !== 'offline';
+    el.textContent = 'Live data unavailable, retrying every 30 seconds.';
   }
 
   // ---------- rendering ----------
@@ -287,23 +381,24 @@
   }
   function fitDest(name, maxW) {
     if (measure(name) <= maxW) return name;
-    let n = name.replace(/Terminals?\s/, 'T');
+    let n = shortDest(name);
     while (measure(n) > maxW && n.length > 1) n = n.slice(0, -1);
     return n.trimEnd();
   }
 
   class Board {
-    constructor(id, key) {
-      this.key = key;
-      this.canvas = document.getElementById(id);
-      this.ctx = this.canvas.getContext('2d');
+    constructor(canvas) {
+      this.canvas = canvas;
+      this.ctx = canvas.getContext('2d');
       this.buf = new Uint8Array(W * H);
       this.resetBottom();
-      new ResizeObserver(() => this.resize()).observe(this.canvas.parentElement);
+      new ResizeObserver(() => this.resize()).observe(canvas.parentElement);
       this.resize();
     }
-    resetBottom() {
-      this.phase = 'clock';
+    // Bottom line: board name for a few seconds, then the clock, then any service messages
+    resetBottom(title) {
+      this.phase = title ? 'title' : 'clock';
+      this.title = title || '';
       this.phaseStart = performance.now();
       this.msgIndex = 0;
       this.queue = [];
@@ -347,13 +442,14 @@
     }
     compose(now) {
       const buf = this.buf; buf.fill(0);
-      const data = state[this.key];
       const trains = data.trains.filter(t => t.eta > Date.now() - 30e3).slice(0, 3);
 
-      if (data.mode === 'connecting') {
+      if (!current) {
+        drawText(buf, 'Choose a station', 2, ROW_Y[0]);
+      } else if (data.mode === 'connecting') {
         drawText(buf, 'Please wait', 2, ROW_Y[0]);
       } else if (!trains.length) {
-        drawText(buf, 'No trains in the next hour', 2, ROW_Y[0]);
+        drawText(buf, data.mode === 'offline' ? 'Live data unavailable' : 'No trains in the next hour', 2, ROW_Y[0]);
       }
       trains.forEach((t, i) => {
         const y = ROW_Y[i];
@@ -364,11 +460,14 @@
         drawText(buf, label, W - 2 - lw, y);
       });
 
-      // bottom line: clock, then any service messages scrolling through
       const y = ROW_Y[3];
       const msgs = data.messages;
       const elapsed = now - this.phaseStart;
-      if (this.phase === 'clock') {
+      if (this.phase === 'title') {
+        const text = fitDest(this.title, W - 4);
+        drawText(buf, text, Math.round((W - measure(text)) / 2), y);
+        if (elapsed > 5000) { this.phase = 'clock'; this.phaseStart = now; }
+      } else if (this.phase === 'clock') {
         const clock = clockFmt.format(new Date());
         drawText(buf, clock, Math.round((W - measure(clock)) / 2), y);
         if (msgs.length && elapsed > 9000) { this.phase = 'msg'; this.phaseStart = now; this.queue = msgs.slice(); this.msgIndex = 0; }
@@ -400,61 +499,277 @@
     }
   }
 
-  var boards = [new Board('board-P4', 'P4')];
-  const centralBoard = new Board('board-CL', 'CL');
-  const visibleBoards = () => centralShown ? [boards[0], centralBoard] : boards;
+  const canvas = document.getElementById('board');
+  const board = new Board(canvas);
 
   function describe() {
-    const parts = [];
-    const list = [['P4', 'Acton Main Line eastbound']];
-    if (centralShown) list.push(['CL', 'North Acton Central line eastbound']);
-    for (const [key, name] of list) {
-      const t = state[key].trains.filter(t => t.eta > Date.now() - 30e3).slice(0, 3);
+    let full = 'Choose a station to show departures.';
+    if (current) {
+      const t = data.trains.filter(t => t.eta > Date.now() - 30e3).slice(0, 3);
       const text = t.length ? t.map(x => `${x.dest} ${minsLabel(x.eta)}`).join(', ') : 'no trains in the next hour';
-      const full = `${name}: ${text}.` + (state[key].messages.length ? ' ' + state[key].messages.join('. ') + '.' : '');
-      document.getElementById('board-' + key).setAttribute('aria-label', full);
-      parts.push(full);
+      full = `${titleOf(current)}: ${text}.` + (data.messages.length ? ' ' + data.messages.join('. ') + '.' : '');
     }
+    canvas.setAttribute('aria-label', full);
     const sr = document.getElementById('sr');
-    const joined = parts.join(' ');
-    if (sr.textContent !== joined) sr.textContent = joined;
+    if (sr.textContent !== full) sr.textContent = full;
   }
 
   let lastSecond = 0;
   function frame(now) {
-    visibleBoards().forEach(b => { b.compose(now); b.paint(); });
+    board.compose(now); board.paint();
     if (now - lastSecond > 15000) { describe(); lastSecond = now; }
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
-
-  refresh();
   setInterval(refresh, 30000);
-  setInterval(refreshCentral, 30000);
 
-  // ---------- Central line toggle ----------
-  const toggle = document.getElementById('toggle');
-  const centralWrap = document.getElementById('central-wrap');
-  function setCentral(on) {
-    centralShown = on;
-    centralWrap.hidden = !on;
-    document.body.classList.toggle('dual', on);
-    toggle.textContent = on ? 'Hide Central line' : 'Show Central line';
-    toggle.setAttribute('aria-pressed', String(on));
-    history.replaceState(null, '', on ? '#central' : location.pathname + location.search);
-    if (on) { centralBoard.resetBottom(); refreshCentral(); }
+  // ---------- choosing a board ----------
+  let favs = store.get('favourites', []);
+  const isFav = b => b && favs.some(f => keyOf(f) === keyOf(b));
+
+  function show(b) {
+    current = b;
+    data = { trains: [], messages: [], mode: 'connecting', updated: 0 };
+    board.resetBottom(`${b.station} ${b.bound || b.dirLabel}`);
+    store.set('last', b);
+    history.replaceState(null, '', '#' + keyOf(b));
+    document.title = `${b.station} ${b.bound || ''} departures`.replace(/\s+/g, ' ');
+    renderChrome();
     updateStatus();
     describe();
+    refresh();
   }
-  toggle.addEventListener('click', e => { e.stopPropagation(); setCentral(!centralShown); });
-  if (location.hash === '#central') setCentral(true);
 
-  // Show the button and cursor only while the mouse is moving
+  function toggleFav(b) {
+    if (isFav(b)) favs = favs.filter(f => keyOf(f) !== keyOf(b));
+    else favs = favs.concat([{ ...b }]);
+    store.set('favourites', favs);
+    renderChrome();
+  }
+
+  const caption = document.getElementById('caption');
+  const favBar = document.getElementById('favs');
+  const star = document.getElementById('star');
+  function renderChrome() {
+    caption.textContent = current ? titleOf(current) : '';
+    star.hidden = !current;
+    const on = isFav(current);
+    star.setAttribute('aria-pressed', String(on));
+    star.textContent = on ? '★ Favourite' : '☆ Favourite';
+    star.title = on ? 'Remove from favourites' : 'Add to favourites';
+    favBar.replaceChildren(...favs.map((f, i) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'chip';
+      btn.title = titleOf(f);
+      btn.setAttribute('aria-current', String(!!current && keyOf(f) === keyOf(current)));
+      if (i < 9) { const k = document.createElement('kbd'); k.textContent = i + 1; btn.append(k); }
+      btn.append(f.short);
+      btn.addEventListener('click', () => show(f));
+      return btn;
+    }));
+  }
+  star.addEventListener('click', () => current && toggleFav(current));
+
+  // picker dialog
+  const picker = document.getElementById('picker');
+  const q = document.getElementById('q');
+  const results = document.getElementById('results');
+  const backBtn = document.getElementById('back');
+  const searchWrap = document.getElementById('search-wrap');
+  const pickerTitle = document.getElementById('picker-title');
+  let searchCtl, openToken;
+
+  const el = (tag, props = {}, ...kids) => { const e = Object.assign(document.createElement(tag), props); e.append(...kids); return e; };
+
+  function boardRow(b, sub, { removable } = {}) {
+    const main = el('button', { type: 'button', className: 'main' },
+      el('span', { className: 'swatch' }),
+      el('span', { className: 'text' }, el('span', { textContent: removable ? titleOf(b) : b.dirLabel }), sub ? el('span', { className: 'sub', textContent: sub }) : ''));
+    main.firstChild.style.background = lineColour(b.line, b.mode);
+    main.addEventListener('click', () => { show(b); picker.close(); });
+    const fav = el('button', { type: 'button', className: 'icon' });
+    const paint = () => {
+      const on = isFav(b);
+      fav.textContent = removable ? '✕' : on ? '★' : '☆';
+      fav.setAttribute('aria-label', (removable || on ? 'Remove from favourites: ' : 'Add to favourites: ') + titleOf(b));
+      if (!removable) fav.setAttribute('aria-pressed', String(on));
+    };
+    paint();
+    fav.addEventListener('click', () => { toggleFav(b); if (removable) showHome(); else paint(); });
+    return el('li', { className: 'row' }, main, fav);
+  }
+
+  function showHome() {
+    backBtn.hidden = true; searchWrap.hidden = false; openToken = null;
+    pickerTitle.textContent = 'Choose a board';
+    if (q.value.trim().length >= 2) return search();
+    const parts = [];
+    if (favs.length) parts.push(el('h3', { textContent: 'Favourites' }), el('ul', {}, ...favs.map(f => boardRow(f, '', { removable: true }))));
+    parts.push(el('p', { className: 'note', textContent: favs.length
+      ? 'Search for a station to add another board.'
+      : 'Search for a station, pick a direction, then tap ☆ to keep it here for next time.' }));
+    results.replaceChildren(...parts);
+  }
+
+  async function search() {
+    const term = q.value.trim();
+    if (term.length < 2) return showHome();
+    searchCtl?.abort();
+    searchCtl = new AbortController();
+    try {
+      const res = await getJSON(`/StopPoint/Search/${encodeURIComponent(term)}?modes=${MODES.join(',')}&maxResults=12`, searchCtl.signal);
+      if (searchWrap.hidden) return;
+      const matches = (res.matches || []).filter(m => m.modes.some(x => MODES.includes(x)));
+      if (!matches.length) return results.replaceChildren(el('p', { className: 'note', textContent: `No stations match “${term}”.` }));
+      results.replaceChildren(el('ul', {}, ...matches.map(m => {
+        const modes = m.modes.filter(x => MODES.includes(x)).map(x => x.replace('-', ' ')).join(', ');
+        const main = el('button', { type: 'button', className: 'main' },
+          el('span', { className: 'text' }, el('span', { textContent: cleanName(m.name) }), el('span', { className: 'sub', textContent: modes })));
+        main.addEventListener('click', () => openStation(m));
+        return el('li', { className: 'row' }, main);
+      })));
+    } catch (e) {
+      if (e.name !== 'AbortError') results.replaceChildren(el('p', { className: 'note', textContent: 'Couldn’t reach TfL. Check your connection and try again.' }));
+    }
+  }
+  let searchTimer;
+  q.addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(search, 250); });
+  q.addEventListener('keydown', e => { if (e.key === 'Enter') { clearTimeout(searchTimer); search(); } });
+
+  // Work out which line + direction boards a station offers, from the trains it has right now
+  async function openStation(m) {
+    clearTimeout(searchTimer);
+    searchCtl?.abort();
+    const station = cleanName(m.name);
+    backBtn.hidden = false; searchWrap.hidden = true;
+    pickerTitle.textContent = station;
+    results.replaceChildren(el('p', { className: 'note', textContent: 'Finding lines and directions…' }));
+    backBtn.focus();
+    try {
+      const token = openToken = {};
+      const detail = await getJSON(`/StopPoint/${m.id}`);
+      const stops = (m.id.startsWith('HUB') ? detail.children || [] : [detail])
+        .filter(s => (s.modes || []).some(x => MODES.includes(x)));
+      const lineInfo = [];   // { naptan, stopName, line, lineName, mode }
+      for (const s of stops) {
+        const names = Object.fromEntries((s.lines || []).map(l => [l.id, l.name]));
+        for (const g of s.lineModeGroups || []) {
+          if (!MODES.includes(g.modeName)) continue;
+          for (const line of g.lineIdentifier) {
+            lineInfo.push({ naptan: s.id, stopName: cleanName(s.commonName), line, lineName: /line$/i.test(names[line] || '') || g.modeName !== 'tube' ? (names[line] || line) : names[line] + ' line', mode: g.modeName });
+          }
+        }
+      }
+      const arrivals = await Promise.all(stops.map(s => getJSON(`/StopPoint/${s.id}/Arrivals`).catch(() => [])));
+      if (token !== openToken || searchWrap.hidden === false) return;
+      const options = new Map();
+      stops.forEach((s, i) => {
+        const byLine = {};
+        for (const t of arrivals[i]) (byLine[t.lineId] ||= []).push(t);
+        for (const info of lineInfo.filter(x => x.naptan === s.id)) {
+          const list = byLine[info.line] || [];
+          const useBound = list.some(t => boundOf(t.platformName));
+          for (const t of list) {
+            if (t.destinationNaptanId === s.id) continue;
+            const bound = useBound ? boundOf(t.platformName) : '';
+            const dir = useBound ? '' : t.direction;
+            if (!bound && !dir) continue;
+            const b = { naptan: s.id, station, line: info.line, lineName: info.lineName, mode: info.mode, bound, dir };
+            const k = keyOf(b);
+            if (!options.has(k)) options.set(k, { b, stopName: info.stopName, dests: new Map() });
+            const dest = shortDest(cleanName(t.destinationName || t.towards || ''));
+            const o = options.get(k);
+            if (dest) o.dests.set(dest, (o.dests.get(dest) || 0) + 1);
+          }
+        }
+      });
+      // Lines with nothing running right now still get plain inbound/outbound choices
+      const seenLines = new Set([...options.values()].map(o => o.b.line));
+      for (const info of lineInfo) {
+        if (seenLines.has(info.line)) continue;
+        seenLines.add(info.line);
+        for (const dir of ['outbound', 'inbound']) {
+          const b = { naptan: info.naptan, station, line: info.line, lineName: info.lineName, mode: info.mode, bound: '', dir };
+          options.set(keyOf(b), { b, stopName: info.stopName, dests: new Map(), quiet: true });
+        }
+      }
+      if (!options.size) return results.replaceChildren(el('p', { className: 'note', textContent: 'No live departures are available for this station.' }));
+
+      const stopsPerLine = {};
+      for (const o of options.values()) (stopsPerLine[o.b.line] ||= new Set()).add(o.b.naptan);
+      const groups = {};
+      for (const o of options.values()) {
+        const top = [...o.dests.entries()].sort((a, b) => b[1] - a[1]).map(e => e[0]).slice(0, 3);
+        const b = o.b;
+        b.dirLabel = b.bound || (top.length ? 'Towards ' + top.slice(0, 2).join(', ') : b.dir[0].toUpperCase() + b.dir.slice(1));
+        b.short = `${station} ${b.bound || (top.length ? '→ ' + top[0] : b.dir)}`;
+        const subs = [];
+        if (b.bound && top.length) subs.push('towards ' + top.join(', '));
+        if (stopsPerLine[b.line].size > 1) subs.push(o.stopName);
+        if (o.quiet) subs.push('no trains right now');
+        (groups[b.lineName] ||= []).push(boardRow(b, subs.join(' · ')));
+      }
+      results.replaceChildren(...Object.entries(groups).flatMap(([name, rows]) => [el('h3', { textContent: name }), el('ul', {}, ...rows)]));
+      results.querySelector('.main')?.focus();
+    } catch (e) {
+      results.replaceChildren(el('p', { className: 'note', textContent: 'Couldn’t reach TfL. Check your connection and try again.' }));
+    }
+  }
+
+  function openPicker() {
+    if (!picker.open) picker.showModal();
+    q.value = '';
+    showHome();
+    q.focus();
+  }
+  backBtn.addEventListener('click', () => { showHome(); q.focus(); });
+  document.getElementById('close').addEventListener('click', () => picker.close());
+  document.getElementById('change').addEventListener('click', openPicker);
+  picker.addEventListener('click', e => { if (e.target === picker) picker.close(); });   // backdrop
+
+  // Keyboard: 1-9 jump to a favourite, / or S to change board, F to favourite
+  document.addEventListener('keydown', e => {
+    if (picker.open || e.ctrlKey || e.metaKey || e.altKey || /input|textarea/i.test(e.target.tagName)) return;
+    if (/^[1-9]$/.test(e.key) && favs[e.key - 1]) show(favs[e.key - 1]);
+    else if (e.key === '/' || e.key.toLowerCase() === 's') { e.preventDefault(); openPicker(); }
+    else if (e.key.toLowerCase() === 'f' && current) toggleFav(current);
+  });
+
+  // ---------- start: link > last board > picker ----------
+  async function start() {
+    const hash = decodeURIComponent(location.hash.slice(1));
+    const last = store.get('last', null);
+    const known = favs.concat(last ? [last] : []);
+    let b = hash && known.find(x => keyOf(x) === hash);
+    if (!b && /^[^/]+\/[^/]+\/[bd]:.+$/.test(hash)) {
+      // a shared link for a board this browser hasn't seen: rebuild it from TfL
+      const [naptan, line, sel] = hash.split('/');
+      try {
+        const s = await getJSON(`/StopPoint/${naptan}`);
+        const l = (s.lines || []).find(x => x.id === line);
+        const g = (s.lineModeGroups || []).find(x => x.lineIdentifier.includes(line));
+        if (l && g) {
+          const bound = sel.startsWith('b:') ? sel.slice(2) : '', dir = sel.startsWith('d:') ? sel.slice(2) : '';
+          const station = cleanName(s.commonName);
+          const label = bound || dir[0].toUpperCase() + dir.slice(1);
+          b = { naptan, station, line, lineName: g.modeName === 'tube' && !/line$/i.test(l.name) ? l.name + ' line' : l.name, mode: g.modeName, bound, dir, dirLabel: label, short: `${station} ${bound || dir}` };
+        }
+      } catch (e) {}
+    }
+    b ||= last;
+    renderChrome();
+    describe();
+    if (b) show(b); else openPicker();
+  }
+  start();
+
+  // Show the controls and cursor only while the pointer is moving
   let idleTimer;
   function wake() {
     document.body.classList.remove('idle');
     clearTimeout(idleTimer);
-    idleTimer = setTimeout(() => document.body.classList.add('idle'), 2500);
+    idleTimer = setTimeout(() => document.body.classList.add('idle'), 3000);
   }
   ['mousemove', 'touchstart', 'keydown'].forEach(ev => document.addEventListener(ev, wake, { passive: true }));
 
@@ -465,8 +780,9 @@
   stayAwake();
   document.addEventListener('visibilitychange', () => { if (!document.hidden) stayAwake(); });
 
-  // Click or tap anywhere to toggle fullscreen
-  document.addEventListener('click', () => {
+  // Click or tap the board to toggle fullscreen
+  document.addEventListener('click', e => {
+    if (e.target.closest('button, dialog, input, .chrome')) return;
     if (document.fullscreenElement) document.exitFullscreen();
     else document.documentElement.requestFullscreen?.().catch(() => {});
   });
