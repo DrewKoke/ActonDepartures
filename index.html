@@ -264,13 +264,67 @@
   const platformOf = p => { const v = (p || '').replace(/^.*?platform\s*/i, '').trim(); return /unknown/i.test(v) ? '' : v; };
 
   // A board is one station stop, one line and one direction:
-  // { naptan, station, line, lineName, mode, bound | dir, dirLabel, short }
+  // { naptan, station, stopName, line, lineName, mode, bound | dir, dirLabel, short }
   // "bound" (Eastbound etc.) comes from the platform name where TfL gives one,
-  // otherwise "dir" is TfL's inbound/outbound.
-  const keyOf = b => `${b.naptan}/${b.line}/${b.bound ? 'b:' + b.bound : 'd:' + b.dir}`;
-  const wantOf = b => b.bound || b.dir;
-  const trainDir = (b, t) => b.bound ? boundOf(t.platformName) : t.direction;
+  // otherwise "dir" is TfL's inbound/outbound, or "all" at the end of a line
+  // where every departure goes the same way.
+  const dirKey = b => b.bound ? 'b:' + b.bound : 'd:' + b.dir;
+  const keyOf = b => `${b.naptan}/${b.line}/${dirKey(b)}`;
+  const dirName = d => d === 'all' ? 'All departures' : d[0].toUpperCase() + d.slice(1);
   const titleOf = b => `${b.station} · ${b.lineName} · ${b.dirLabel}`;
+
+  // Every train on one line at one stop that carries passengers on from there,
+  // tagged with the direction key its board uses.
+  function servicesAt(naptan, names, line, arrivals, departures) {
+    const now = Date.now();
+    const terminates = t => t.destinationNaptanId === naptan || names.includes(cleanName(t.destinationName));
+    const live = (arrivals || []).filter(t => t.lineId === line && !terminates(t));
+    const useBound = live.some(t => boundOf(t.platformName));
+    const keyFor = t => useBound ? (boundOf(t.platformName) ? 'b:' + boundOf(t.platformName) : '') : (t.direction ? 'd:' + t.direction : '');
+
+    // Remember which way each destination / platform goes, so the timetable feed
+    // (which has no direction of its own) can be sorted even when no live trains are around.
+    const mapKey = `dirs2:${naptan}:${line}`;
+    const dirs = store.get(mapKey, {});
+    for (const t of live) {
+      const k = keyFor(t);
+      if (!k) continue;
+      if (t.destinationNaptanId) dirs['d:' + t.destinationNaptanId] = k;
+      const p = platformOf(t.platformName);
+      if (p) dirs['p:' + p] = k;
+    }
+    store.set(mapKey, dirs);
+
+    const out = [];
+    if (departures && departures.length) {
+      // No known directions here means it's the end of the line: everything leaves the same way
+      const known = Object.keys(dirs).length > 0;
+      for (const t of departures) {
+        if (terminates(t)) continue;
+        const key = dirs['d:' + t.destinationNaptanId] || dirs['p:' + platformOf(t.platformName)] || (known ? '' : 'd:all');
+        if (!key) continue;
+        const sched = new Date(t.scheduledTimeOfDeparture || t.scheduledTimeOfArrival).getTime();
+        const eta = new Date(t.estimatedTimeOfDeparture || t.estimatedTimeOfArrival || t.scheduledTimeOfDeparture || t.scheduledTimeOfArrival).getTime();
+        out.push({ key, dest: cleanName(t.destinationName || 'Check front of train'), eta, sched,
+                   cancelled: t.departureStatus === 'Cancelled', cause: t.cause });
+      }
+    } else {
+      const seen = new Map();
+      for (const t of live) {
+        const key = keyFor(t);
+        if (!key) continue;
+        const dest = cleanName(t.destinationName || 'Check front of train');
+        const towards = (t.towards || '').trim();
+        const name = towards && towards.toLowerCase().startsWith(dest.toLowerCase()) ? towards : (dest || towards);
+        const eta = new Date(t.expectedArrival).getTime();
+        if (eta < now - 30e3) continue;
+        const id = t.vehicleId && t.vehicleId !== '000' ? t.vehicleId : name + eta;
+        if (!seen.has(id) || seen.get(id).eta > eta) seen.set(id, { key, dest: name, eta, sched: eta });
+      }
+      out.push(...seen.values());
+    }
+    return out;
+  }
 
   // ---------- board state ----------
   let current = null;
@@ -288,59 +342,24 @@
 
   function build(b, arrivals, departures, lineStatus) {
     const now = Date.now();
-    const want = wantOf(b);
-    const mine = arrivals.filter(t => t.lineId === b.line);
+    const want = dirKey(b);
     const trains = [], notices = [];
-
-    // Remember which way each destination / platform goes, so the timetable feed
-    // (which has no direction of its own) can be sorted even when no live trains are around.
-    const mapKey = `dirs:${b.naptan}:${b.line}:${b.bound ? 'b' : 'd'}`;
-    const dirs = store.get(mapKey, {});
-    for (const t of mine) {
-      const d = trainDir(b, t);
-      if (!d) continue;
-      if (t.destinationNaptanId) dirs['d:' + t.destinationNaptanId] = d;
-      const p = platformOf(t.platformName);
-      if (p) dirs['p:' + p] = d;
-    }
-    store.set(mapKey, dirs);
-
-    if (departures && departures.length) {
-      for (const t of departures) {
-        if (t.destinationNaptanId === b.naptan) continue;
-        const d = dirs['d:' + t.destinationNaptanId] || dirs['p:' + platformOf(t.platformName)];
-        if (d !== want) continue;
-        const sched = new Date(t.scheduledTimeOfDeparture || t.scheduledTimeOfArrival).getTime();
-        const eta = new Date(t.estimatedTimeOfDeparture || t.estimatedTimeOfArrival || t.scheduledTimeOfDeparture || t.scheduledTimeOfArrival).getTime();
-        const dest = cleanName(t.destinationName || 'Check front of train');
-        if (t.departureStatus === 'Cancelled') {
-          if (sched > now - 60e3 && sched < now + 90 * 60e3) {
-            const why = (t.cause || '').replace(/^This service has been cancelled\s*/i, '').replace(/\.$/, '');
-            notices.push({ at: sched, text: `The ${hmFmt.format(sched)} ${dest} service is cancelled${why ? ' ' + why : ''}` });
-          }
-          continue;
+    const services = servicesAt(b.naptan, [b.station, b.stopName].filter(Boolean), b.line, arrivals, departures);
+    for (const s of services) {
+      if (b.dir !== 'all' && s.key !== want) continue;
+      if (s.cancelled) {
+        if (s.sched > now - 60e3 && s.sched < now + 90 * 60e3) {
+          const why = (s.cause || '').replace(/^This service has been cancelled\s*/i, '').replace(/\.$/, '');
+          notices.push({ at: s.sched, text: `The ${hmFmt.format(s.sched)} ${s.dest} service is cancelled${why ? ' ' + why : ''}` });
         }
-        if (eta < now - 30e3) continue;
-        trains.push({ dest, eta });
-        const late = Math.round((eta - sched) / 60e3);
-        if (late >= 2 && eta < now + 60 * 60e3) {
-          notices.push({ at: sched, text: `The ${hmFmt.format(sched)} ${dest} service is running ${late} min late` });
-        }
+        continue;
       }
-    } else {
-      const seen = new Map();
-      for (const t of mine) {
-        if (trainDir(b, t) !== want) continue;
-        if (t.destinationNaptanId === b.naptan) continue;   // terminating here, not in service beyond
-        const dest = cleanName(t.destinationName || 'Check front of train');
-        const towards = (t.towards || '').trim();
-        const name = towards && towards.toLowerCase().startsWith(dest.toLowerCase()) ? towards : (dest || towards);
-        const eta = new Date(t.expectedArrival).getTime();
-        if (eta < now - 30e3) continue;
-        const key = t.vehicleId && t.vehicleId !== '000' ? t.vehicleId : name + eta;
-        if (!seen.has(key) || seen.get(key).eta > eta) seen.set(key, { dest: name, eta });
+      if (s.eta < now - 30e3) continue;
+      trains.push({ dest: s.dest, eta: s.eta });
+      const late = Math.round((s.eta - s.sched) / 60e3);
+      if (late >= 2 && s.eta < now + 60 * 60e3) {
+        notices.push({ at: s.sched, text: `The ${hmFmt.format(s.sched)} ${s.dest} service is running ${late} min late` });
       }
-      trains.push(...seen.values());
     }
 
     trains.sort((a, b) => a.eta - b.eta);
@@ -652,61 +671,83 @@
       const stops = (m.id.startsWith('HUB') ? detail.children || [] : [detail])
         .filter(s => (s.modes || []).some(x => MODES.includes(x)));
       const lineInfo = [];   // { naptan, stopName, line, lineName, mode }
-      for (const s of stops) {
+      const addLines = (s, only) => {
         const names = Object.fromEntries((s.lines || []).map(l => [l.id, l.name]));
         for (const g of s.lineModeGroups || []) {
           if (!MODES.includes(g.modeName)) continue;
           for (const line of g.lineIdentifier) {
-            lineInfo.push({ naptan: s.id, stopName: cleanName(s.commonName), line, lineName: /line$/i.test(names[line] || '') || g.modeName !== 'tube' ? (names[line] || line) : names[line] + ' line', mode: g.modeName });
+            if (only && !only.includes(line)) continue;
+            lineInfo.push({ naptan: s.id || s.naptanId, stopName: cleanName(s.commonName), line, lineName: /line$/i.test(names[line] || '') || g.modeName !== 'tube' ? (names[line] || line) : names[line] + ' line', mode: g.modeName });
           }
         }
+      };
+      stops.forEach(s => addLines(s));
+      // Some lines at a hub use a stop TfL doesn't list among its children; find it from the line itself
+      const missing = (detail.lineModeGroups || []).filter(g => MODES.includes(g.modeName))
+        .flatMap(g => g.lineIdentifier).filter(line => !lineInfo.some(x => x.line === line));
+      if (m.id.startsWith('HUB') && missing.length) {
+        const lineStops = await Promise.all(missing.map(line => getJSON(`/Line/${line}/StopPoints`).catch(() => [])));
+        missing.forEach((line, i) => {
+          const s = lineStops[i].find(x => x.hubNaptanCode === m.id);
+          if (!s) return;
+          if (!stops.some(x => x.id === s.naptanId)) stops.push({ ...s, id: s.naptanId });
+          addLines(s, [line]);
+        });
       }
-      const arrivals = await Promise.all(stops.map(s => getJSON(`/StopPoint/${s.id}/Arrivals`).catch(() => [])));
+      const [arrivals, departures] = await Promise.all([
+        Promise.all(stops.map(s => getJSON(`/StopPoint/${s.id}/Arrivals`).catch(() => []))),
+        Promise.all(lineInfo.map(x => TIMETABLED.has(x.mode)
+          ? getJSON(`/StopPoint/${x.naptan}/ArrivalDepartures?lineIds=${x.line}`).catch(() => null) : null))
+      ]);
       if (token !== openToken || searchWrap.hidden === false) return;
       const options = new Map();
-      stops.forEach((s, i) => {
-        const byLine = {};
-        for (const t of arrivals[i]) (byLine[t.lineId] ||= []).push(t);
-        for (const info of lineInfo.filter(x => x.naptan === s.id)) {
-          const list = byLine[info.line] || [];
-          const useBound = list.some(t => boundOf(t.platformName));
-          for (const t of list) {
-            if (t.destinationNaptanId === s.id) continue;
-            const bound = useBound ? boundOf(t.platformName) : '';
-            const dir = useBound ? '' : t.direction;
-            if (!bound && !dir) continue;
-            const b = { naptan: s.id, station, line: info.line, lineName: info.lineName, mode: info.mode, bound, dir };
-            const k = keyOf(b);
-            if (!options.has(k)) options.set(k, { b, stopName: info.stopName, dests: new Map() });
-            const dest = shortDest(cleanName(t.destinationName || t.towards || ''));
-            const o = options.get(k);
-            if (dest) o.dests.set(dest, (o.dests.get(dest) || 0) + 1);
-          }
+      lineInfo.forEach((info, i) => {
+        const names = [station, info.stopName];
+        const services = servicesAt(info.naptan, names, info.line, arrivals[stops.findIndex(s => s.id === info.naptan)], departures[i]);
+        const base = { naptan: info.naptan, station, stopName: info.stopName, line: info.line, lineName: info.lineName, mode: info.mode };
+        for (const sv of services) {
+          if (sv.cancelled) continue;
+          const [kind, value] = [sv.key.slice(0, 1), sv.key.slice(2)];
+          const b = { ...base, bound: kind === 'b' ? value : '', dir: kind === 'd' ? value : '' };
+          const k = keyOf(b);
+          if (!options.has(k)) options.set(k, { b, dests: new Map() });
+          const dest = shortDest(sv.dest);
+          const o = options.get(k);
+          if (dest) o.dests.set(dest, (o.dests.get(dest) || 0) + 1);
         }
       });
-      // Lines with nothing running right now still get plain inbound/outbound choices
+      // Lines with nothing running right now still get plain choices, unless the only
+      // trains TfL lists are ones finishing here (it publishes no departures for some termini)
       const seenLines = new Set([...options.values()].map(o => o.b.line));
+      const groups = {};
       for (const info of lineInfo) {
         if (seenLines.has(info.line)) continue;
         seenLines.add(info.line);
-        for (const dir of ['outbound', 'inbound']) {
-          const b = { naptan: info.naptan, station, line: info.line, lineName: info.lineName, mode: info.mode, bound: '', dir };
-          options.set(keyOf(b), { b, stopName: info.stopName, dests: new Map(), quiet: true });
+        const names = [station, info.stopName];
+        const terminating = lineInfo.filter(x => x.line === info.line).some(x =>
+          arrivals[stops.findIndex(s => s.id === x.naptan)].some(t => t.lineId === x.line &&
+            (t.destinationNaptanId === x.naptan || names.includes(cleanName(t.destinationName)))));
+        if (terminating) {
+          groups[info.lineName] = [el('li', {}, el('p', { className: 'note', textContent: 'Trains on this line finish here, and TfL doesn’t publish their departures from this station.' }))];
+          continue;
+        }
+        for (const dir of TIMETABLED.has(info.mode) ? ['all'] : ['outbound', 'inbound']) {
+          const b = { naptan: info.naptan, station, stopName: info.stopName, line: info.line, lineName: info.lineName, mode: info.mode, bound: '', dir };
+          options.set(keyOf(b), { b, dests: new Map(), quiet: true });
         }
       }
-      if (!options.size) return results.replaceChildren(el('p', { className: 'note', textContent: 'No live departures are available for this station.' }));
+      if (!options.size && !Object.keys(groups).length) return results.replaceChildren(el('p', { className: 'note', textContent: 'No live departures are available for this station.' }));
 
       const stopsPerLine = {};
       for (const o of options.values()) (stopsPerLine[o.b.line] ||= new Set()).add(o.b.naptan);
-      const groups = {};
       for (const o of options.values()) {
         const top = [...o.dests.entries()].sort((a, b) => b[1] - a[1]).map(e => e[0]).slice(0, 3);
         const b = o.b;
-        b.dirLabel = b.bound || (top.length ? 'Towards ' + top.slice(0, 2).join(', ') : b.dir[0].toUpperCase() + b.dir.slice(1));
-        b.short = `${station} ${b.bound || (top.length ? '→ ' + top[0] : b.dir)}`;
+        b.dirLabel = b.bound || (top.length ? 'Towards ' + top.slice(0, 2).join(', ') : dirName(b.dir));
+        b.short = `${station} ${b.bound || (top.length ? '→ ' + top[0] : dirName(b.dir).toLowerCase())}`;
         const subs = [];
-        if (b.bound && top.length) subs.push('towards ' + top.join(', '));
-        if (stopsPerLine[b.line].size > 1) subs.push(o.stopName);
+        if (top.length > (b.bound ? 0 : 2)) subs.push('towards ' + top.join(', '));
+        if (stopsPerLine[b.line].size > 1) subs.push(b.stopName);
         if (o.quiet) subs.push('no trains right now');
         (groups[b.lineName] ||= []).push(boardRow(b, subs.join(' · ')));
       }
@@ -752,7 +793,7 @@
         if (l && g) {
           const bound = sel.startsWith('b:') ? sel.slice(2) : '', dir = sel.startsWith('d:') ? sel.slice(2) : '';
           const station = cleanName(s.commonName);
-          const label = bound || dir[0].toUpperCase() + dir.slice(1);
+          const label = bound || dirName(dir);
           b = { naptan, station, line, lineName: g.modeName === 'tube' && !/line$/i.test(l.name) ? l.name + ' line' : l.name, mode: g.modeName, bound, dir, dirLabel: label, short: `${station} ${bound || dir}` };
         }
       } catch (e) {}
