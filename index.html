@@ -201,6 +201,18 @@
   .theme { display: flex; flex-direction: column; gap: 6px; padding: 8px; text-align: left; border-radius: 6px; }
   .theme[aria-pressed="true"] { border-color: var(--accent); background: var(--hl); color: var(--strong); }
   .theme canvas { border-radius: 2px; }
+  .walk { display: flex; align-items: center; gap: 12px; padding: 0 8px; }
+  .walk button { font-size: 18px; padding: 4px 14px; }
+  .walk output { min-width: 64px; text-align: center; font-size: 16px; color: var(--strong); }
+  .rules { display: flex; flex-direction: column; gap: 10px; padding: 0 8px; }
+  .rules li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+  .rules li > select:first-child { flex: 1 1 100%; }
+  .rules li .remove { margin-left: auto; border: 0; background: none; font-size: 16px; color: var(--muted); }
+  select, input[type="time"] {
+    font: inherit; font-size: 14px; padding: 6px 8px;
+    color: var(--strong); background: #000; color-scheme: dark;
+    border: 1px solid var(--border); border-radius: 6px;
+  }
 
   .sr-only {
     position: absolute; width: 1px; height: 1px; overflow: hidden;
@@ -241,6 +253,16 @@
     <h3><span>Colour for this board</span></h3>
     <div class="themes" id="themes" role="group" aria-label="Colour for this board"></div>
     <p class="note" id="theme-note"></p>
+    <h3><span id="walk-title">Walking time to this station</span></h3>
+    <div class="walk">
+      <button id="walk-minus" type="button" aria-label="Less walking time">−</button>
+      <output id="walk-value" aria-live="polite">Off</output>
+      <button id="walk-plus" type="button" aria-label="More walking time">+</button>
+    </div>
+    <p class="note">Trains you can’t reach in time are dimmed, and the board tells you when to leave for the next one you can catch.</p>
+    <h3><span>Boards by time of day</span><button id="rule-add" type="button">Add</button></h3>
+    <ul class="rules" id="rules"></ul>
+    <p class="note" id="rules-note"></p>
   </div>
 </dialog>
 <div class="sr-only" aria-live="polite" id="sr"></div>
@@ -579,6 +601,27 @@
     return n.trimEnd();
   }
 
+  // ---------- leave now ----------
+  // Walking time to a station, in minutes (0 = off), remembered per station on this device
+  const walkTimes = store.get('walkTimes', {});
+  const walkFor = b => (b && walkTimes[b.naptan]) || 0;
+  const missed = t => t.eta - Date.now() < walkFor(current) * 60e3;
+  // Trains to show: with a walking time set, at most one you can no longer catch, then the rest
+  function visibleTrains(n) {
+    const all = data.trains.filter(t => t.eta > Date.now() - 30e3);
+    if (!walkFor(current)) return all.slice(0, n);
+    const gone = all.filter(missed);
+    return gone.slice(-1).concat(all.filter(t => !missed(t))).slice(0, n);
+  }
+  function leaveText() {
+    const walk = walkFor(current);
+    if (!walk) return '';
+    const next = data.trains.find(t => !missed(t));
+    if (!next) return '';
+    const m = Math.floor((next.eta - Date.now()) / 60e3) - walk;
+    return m <= 0 ? 'Leave now' : `Leave in ${m} min`;
+  }
+
   const APPROACH_MODES = new Set(['tube', 'dlr']);
   const PORTRAIT_TRAINS = 5, PW = 88, PH = 26 + PORTRAIT_TRAINS * 19 + 24;
   const dateFmt = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', weekday: 'short', day: 'numeric', month: 'short' });
@@ -636,12 +679,18 @@
 
       this.sprite = dotSprite(t, pitch);
       this.spriteSize = this.sprite.width;
+      // the same dot, faint: for trains you can no longer catch
+      this.dimSprite = document.createElement('canvas');
+      this.dimSprite.width = this.dimSprite.height = this.spriteSize;
+      const dc = this.dimSprite.getContext('2d');
+      dc.globalAlpha = 0.3;
+      dc.drawImage(this.sprite, 0, 0);
     }
     // Portrait: the whole screen is one tall display. Station and direction at the top,
     // five trains on two lines each, then the clock and messages.
     composePortrait(now) {
       const buf = this.buf; buf.fill(0);
-      const trains = data.trains.filter(t => t.eta > Date.now() - 30e3).slice(0, PORTRAIT_TRAINS);
+      const trains = visibleTrains(PORTRAIT_TRAINS);
       const dashes = y => { for (let x = 0; x < W; x++) if (x % 6 !== 5) buf[y * W + x] = 1; };
       // centred if it fits, otherwise scrolls round and round inside x0..x1
       const marquee = (text, y, x0 = 2, x1 = W - 2, centre = true) => {
@@ -677,6 +726,7 @@
         marquee(m ? m[1] : t.dest, y, 10, W - 1, false);
         if (m) marquee(m[2], y + 9, 10, W - 2 - lw - 4, false);
         drawText(buf, label, W - 2 - lw, y + 9);
+        if (walkFor(current) && missed(t)) this.dimRows(y, y + 18);
       });
 
       const base = top + PORTRAIT_TRAINS * 19;
@@ -693,7 +743,7 @@
       // message line: the date, then any service messages scrolling through once each
       const msgs = data.messages, elapsed = now - this.phaseStart;
       if (this.phase !== 'msg') {
-        marquee(dateFmt.format(new Date()), y2);
+        marquee(leaveText() || dateFmt.format(new Date()), y2);
         if (msgs.length && elapsed > 9000) { this.phase = 'msg'; this.phaseStart = now; this.queue = msgs.slice(); this.msgIndex = 0; }
       } else {
         const text = this.queue[this.msgIndex] || '';
@@ -710,7 +760,7 @@
     compose(now) {
       if (this.portrait) return this.composePortrait(now);
       const buf = this.buf; buf.fill(0);
-      const trains = data.trains.filter(t => t.eta > Date.now() - 30e3).slice(0, 3);
+      const trains = visibleTrains(3);
 
       if (!current) {
         drawText(buf, 'Choose a station', 2, ROW_Y[0]);
@@ -726,6 +776,7 @@
         drawText(buf, String(i + 1), 2, y);
         drawText(buf, fitDest(t.dest, W - 12 - lw - 8), 12, y);
         drawText(buf, label, W - 2 - lw, y);
+        if (walkFor(current) && missed(t)) this.dimRows(y, y + 9);
       });
 
       const y = ROW_Y[3];
@@ -751,7 +802,8 @@
           if (x + tw < 0) { this.phase = 'clock'; this.phaseStart = now; }
         }
       } else if (this.phase === 'clock') {
-        const clock = clockFmt.format(new Date());
+        const leave = leaveText();
+        const clock = clockFmt.format(new Date()) + (leave ? '   ' + leave : '');
         drawText(buf, clock, Math.round((W - measure(clock)) / 2), y);
         if (msgs.length && elapsed > 9000) { this.phase = 'msg'; this.phaseStart = now; this.queue = msgs.slice(); this.msgIndex = 0; }
       } else {
@@ -777,8 +829,12 @@
       ctx.drawImage(this.grid, 0, 0);
       const off = spriteSize / 2;
       for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-        if (buf[y * W + x]) ctx.drawImage(sprite, (x + .5) * pitch - off, (y + .5) * pitch - off);
+        const v = buf[y * W + x];
+        if (v) ctx.drawImage(v === 2 ? this.dimSprite : sprite, (x + .5) * pitch - off, (y + .5) * pitch - off);
       }
+    }
+    dimRows(y0, y1) {
+      for (let y = Math.max(0, y0); y < Math.min(H, y1); y++) for (let x = 0; x < W; x++) if (this.buf[y * W + x] === 1) this.buf[y * W + x] = 2;
     }
   }
 
@@ -788,9 +844,10 @@
   function describe() {
     let full = 'Choose a station to show departures.';
     if (current) {
-      const t = data.trains.filter(t => t.eta > Date.now() - 30e3).slice(0, 3);
-      const text = t.length ? t.map(x => `${x.dest} ${minsLabel(x.eta)}`).join(', ') : 'no trains in the next hour';
-      full = `${titleOf(current)}: ${text}.` + (data.messages.length ? ' ' + data.messages.join('. ') + '.' : '');
+      const t = visibleTrains(3);
+      const text = t.length ? t.map(x => `${x.dest} ${minsLabel(x.eta)}${walkFor(current) && missed(x) ? ' (too soon to catch)' : ''}`).join(', ') : 'no trains in the next hour';
+      const leave = leaveText();
+      full = `${titleOf(current)}: ${text}.` + (leave ? ` ${leave}.` : '') + (data.messages.length ? ' ' + data.messages.join('. ') + '.' : '');
     }
     canvas.setAttribute('aria-label', full);
     const sr = document.getElementById('sr');
@@ -823,6 +880,7 @@
     updateStatus();
     describe();
     refresh();
+    if (settings.open) renderBoardSettings();
   }
 
   function toggleFav(b) {
@@ -1386,10 +1444,69 @@
       return btn;
     }));
   }
+  const walkValue = document.getElementById('walk-value');
+  function renderWalk() {
+    const w = walkFor(current);
+    document.getElementById('walk-title').textContent = `Walking time to ${current.station}`;
+    walkValue.textContent = w ? `${w} min` : 'Off';
+    document.getElementById('walk-minus').disabled = !w;
+  }
+  function setWalk(d) {
+    const w = Math.max(0, Math.min(45, walkFor(current) + d));
+    if (w) walkTimes[current.naptan] = w; else delete walkTimes[current.naptan];
+    store.set('walkTimes', walkTimes);
+    renderWalk();
+    describe();
+  }
+  document.getElementById('walk-minus').addEventListener('click', () => setWalk(-1));
+  document.getElementById('walk-plus').addEventListener('click', () => setWalk(1));
+
+  const rulesBox = document.getElementById('rules');
+  const DAYS = { weekdays: 'Weekdays', weekends: 'Weekends', daily: 'Every day' };
+  function saveRules() { store.set('schedule', schedule); lastRule = ''; applySchedule(); }
+  function renderRules() {
+    schedule = schedule.filter(r => favs.some(f => keyOf(f) === r.key));
+    document.getElementById('rule-add').disabled = !favs.length;
+    document.getElementById('rules-note').textContent = !favs.length
+      ? 'Save a favourite first, then you can switch to it automatically at certain times.'
+      : schedule.length ? 'At these times the board switches to that favourite, including when you open the app. You can still change board by hand.'
+        : 'Switch to a favourite automatically at certain times, e.g. your morning board on weekdays.';
+    rulesBox.replaceChildren(...schedule.map((r, i) => {
+      const fav = el('select', {}, ...favs.map(f => el('option', { value: keyOf(f), textContent: favName(f), selected: keyOf(f) === r.key })));
+      const days = el('select', {}, ...Object.entries(DAYS).map(([v, label]) => el('option', { value: v, textContent: label, selected: v === r.days })));
+      const from = el('input', { type: 'time', value: r.from }), to = el('input', { type: 'time', value: r.to });
+      fav.setAttribute('aria-label', 'Board'); days.setAttribute('aria-label', 'Days');
+      from.setAttribute('aria-label', 'From'); to.setAttribute('aria-label', 'Until');
+      const update = () => { Object.assign(r, { key: fav.value, days: days.value, from: from.value || r.from, to: to.value || r.to }); saveRules(); };
+      [fav, days, from, to].forEach(x => x.addEventListener('change', update));
+      const remove = el('button', { type: 'button', className: 'remove', textContent: '✕' });
+      remove.setAttribute('aria-label', `Remove the rule for ${favName(favs.find(f => keyOf(f) === r.key))}`);
+      remove.addEventListener('click', () => { schedule.splice(i, 1); saveRules(); renderRules(); });
+      return el('li', {}, fav, days, from, el('span', { textContent: 'to' }), to, remove);
+    }));
+  }
+  document.getElementById('rule-add').addEventListener('click', () => {
+    const f = favs.find(x => current && keyOf(x) === keyOf(current)) || favs[0];
+    schedule.push({ key: keyOf(f), days: 'weekdays', from: '07:00', to: '09:30' });
+    saveRules();
+    renderRules();
+    rulesBox.lastElementChild?.querySelector('select')?.focus();
+  });
+
+  // the parts of settings that belong to the board on show
+  function renderBoardSettings() {
+    const fav = favs.find(f => keyOf(f) === keyOf(current));
+    document.getElementById('theme-note').textContent = `${fav ? favName(fav) : titleOf(current)}. Other boards keep their own colours.`;
+    renderThemes();
+    renderWalk();
+  }
   document.getElementById('gear').addEventListener('click', () => {
     if (!current) return;
-    document.getElementById('theme-note').textContent = `${favs.find(f => keyOf(f) === keyOf(current)) ? favName(favs.find(f => keyOf(f) === keyOf(current))) : titleOf(current)}. Other boards keep their own colours.`;
-    renderThemes(); settings.showModal(); themeBox.querySelector('[aria-pressed="true"]')?.focus(); });
+    renderBoardSettings();
+    renderRules();
+    settings.showModal();
+    themeBox.querySelector('[aria-pressed="true"]')?.focus();
+  });
   document.getElementById('settings-close').addEventListener('click', () => settings.close());
   settings.addEventListener('click', e => { if (e.target === settings) settings.close(); });
 
@@ -1439,9 +1556,38 @@
     b ||= last;
     renderChrome();
     describe();
-    if (b) show(b); else openPicker();
+    // a link to a particular board wins; otherwise a time-of-day rule that has just started does
+    const linked = hash && (!last || keyOf(last) !== hash);
+    if (!linked && applySchedule()) b = null;
+    if (b) show(b); else if (!current) openPicker();
     if (imported && imported.length) offerImport(imported);
   }
+  // ---------- boards by time of day ----------
+  // Each rule switches the board once per occurrence, so changing board by hand sticks until the next one
+  let schedule = store.get('schedule', []);
+  let lastRule = store.get('lastRule', '');
+  const londonParts = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', weekday: 'short', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+  function activeRule() {
+    const p = Object.fromEntries(londonParts.formatToParts(new Date()).map(x => [x.type, x.value]));
+    const hm = `${p.hour}:${p.minute}`, weekend = p.weekday === 'Sat' || p.weekday === 'Sun';
+    const rule = schedule.find(r => favs.some(f => keyOf(f) === r.key)
+      && (r.days === 'daily' || (r.days === 'weekends') === weekend)
+      && (r.from <= r.to ? hm >= r.from && hm < r.to : hm >= r.from || hm < r.to));
+    // after midnight, an overnight rule belongs to the occurrence that started the day before
+    const date = `${p.year}-${p.month}-${p.day}`;
+    return rule && { rule, id: `${rule.key}|${rule.from}|${rule.to}|${rule.from > rule.to && hm < rule.to ? 'prev:' + date : date}` };
+  }
+  function applySchedule() {
+    const a = activeRule();
+    if (!a || a.id === lastRule) return false;
+    lastRule = a.id;
+    store.set('lastRule', lastRule);
+    const f = favs.find(x => keyOf(x) === a.rule.key);
+    if (f && (!current || keyOf(current) !== keyOf(f))) show(f);
+    return true;
+  }
+  setInterval(applySchedule, 20000);
+
   start();
   // a favourites link opened in a tab that already has the app
   window.addEventListener('hashchange', () => {
