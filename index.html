@@ -1470,10 +1470,14 @@
   // Installable app: keep the page itself available offline
   if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('sw.js').catch(() => {});
 
-  // Click or tap the board to toggle fullscreen
+  // Click the board to toggle fullscreen. The installed app is already full screen, so taps
+  // leave it alone; on touch screens a tap only enters fullscreen (taps mostly just bring
+  // the controls back, and Android shows its "drag from the top" notice on every re-entry).
+  const installed = matchMedia('(display-mode: fullscreen), (display-mode: standalone)').matches || navigator.standalone;
+  const touch = matchMedia('(pointer: coarse)').matches;
   document.addEventListener('click', e => {
-    if (e.target.closest('button, dialog, input, .chrome')) return;
-    if (document.fullscreenElement) document.exitFullscreen();
+    if (installed || e.target.closest('button, dialog, input, .chrome')) return;
+    if (document.fullscreenElement) { if (!touch) document.exitFullscreen(); }
     else document.documentElement.requestFullscreen?.().catch(() => {});
   });
 })();
