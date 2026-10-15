@@ -63,6 +63,16 @@
     overflow-x: auto; scrollbar-width: none;
   }
   #favs::-webkit-scrollbar { display: none; }
+  #favs:empty { display: none; }
+  /* fade the edge while more favourites are off to the right */
+  #favs.more { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent); }
+  #favs .chip { flex: none; }
+  /* phones: favourites get their own row above the buttons */
+  @media (max-width: 640px) {
+    #bar { flex-wrap: wrap; justify-content: flex-end; }
+    #favs { flex: 1 0 100%; }
+    #status { bottom: calc(108px + env(safe-area-inset-bottom)); }
+  }
   button {
     font: inherit; font-size: 13px; line-height: 1.2;
     padding: 6px 11px;
@@ -744,7 +754,12 @@
       btn.addEventListener('click', () => show(f));
       return btn;
     }));
+    favFade();
+    favBar.querySelector('[aria-current="true"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }
+  const favFade = () => favBar.classList.toggle('more', favBar.scrollLeft + favBar.clientWidth < favBar.scrollWidth - 1);
+  favBar.addEventListener('scroll', favFade, { passive: true });
+  addEventListener('resize', favFade);
   star.addEventListener('click', () => current && toggleFav(current));
 
   // picker dialog
