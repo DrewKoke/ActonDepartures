@@ -646,6 +646,8 @@
       H = portrait ? PH : LH;
       this.buf = new Uint8Array(W * H);
       document.body.classList.toggle('portrait', portrait);
+      // turning a phone upright leaves full screen, so the status bar comes back
+      if (portrait && document.fullscreenElement && matchMedia('(pointer: coarse)').matches) document.exitFullscreen().catch(() => {});
       this.resize();
     }
     // Bottom line: board name for a few seconds, then the clock, then any service messages
@@ -1616,14 +1618,18 @@
   // Installable app: keep the page itself available offline
   if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('sw.js').catch(() => {});
 
-  // Click the board to toggle fullscreen. The installed app is already full screen, so taps
-  // leave it alone; on touch screens a tap only enters fullscreen (taps mostly just bring
-  // the controls back, and Android shows its "drag from the top" notice on every re-entry).
-  const installed = matchMedia('(display-mode: fullscreen), (display-mode: standalone)').matches || navigator.standalone;
+  // Click the board to toggle fullscreen. On touch screens a tap only enters it, and only in
+  // landscape (taps mostly just bring the controls back, and Android shows its "drag from the
+  // top" notice on every entry); in portrait the status bar stays.
   const touch = matchMedia('(pointer: coarse)').matches;
   document.addEventListener('click', e => {
-    if (installed || e.target.closest('button, dialog, input, .chrome')) return;
-    if (document.fullscreenElement) { if (!touch) document.exitFullscreen(); }
+    if (e.target.closest('button, dialog, input, .chrome')) return;
+    if (touch) {
+      // phones: a tap in landscape goes full screen; portrait keeps the status bar
+      if (!board.portrait && !document.fullscreenElement) document.documentElement.requestFullscreen?.().catch(() => {});
+      return;
+    }
+    if (document.fullscreenElement) document.exitFullscreen();
     else document.documentElement.requestFullscreen?.().catch(() => {});
   });
 })();
