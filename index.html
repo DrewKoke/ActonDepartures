@@ -274,7 +274,7 @@
     ' ':[0,0,0,0,0,0,0], '!':[4,4,4,4,0,0,4], '"':[10,10,0,0,0,0,0], "'":[4,4,8,0,0,0,0],
     '(':[2,4,8,8,8,4,2], ')':[8,4,2,2,2,4,8], '+':[0,4,4,31,4,4,0], ',':[0,0,0,0,12,4,8],
     '-':[0,0,0,31,0,0,0], '.':[0,0,0,0,0,12,12], '/':[0,1,2,4,8,16,0], ':':[0,12,12,0,12,12,0],
-    '&':[12,18,20,8,21,18,13],
+    '&':[12,18,20,8,21,18,13], '×':[0,17,10,4,10,17,0],
     '0':[14,17,19,21,25,17,14], '1':[4,12,4,4,4,4,14], '2':[14,17,1,2,4,8,31],
     '3':[31,2,4,2,1,17,14], '4':[2,6,10,18,31,2,2], '5':[31,16,30,1,1,17,14],
     '6':[6,8,16,30,17,17,14], '7':[31,1,2,4,8,8,8], '8':[14,17,17,14,17,17,14],
@@ -606,12 +606,11 @@
   const walkTimes = store.get('walkTimes', {});
   const walkFor = b => (b && walkTimes[b.naptan]) || 0;
   const missed = t => t.eta - Date.now() < walkFor(current) * 60e3;
-  // Trains to show: with a walking time set, at most one you can no longer catch, then the rest
+  // Trains to show, always in order, so the next train is still there if you're already at the
+  // station; ones too soon to walk to get a × instead of their number
+  const trainNumber = (t, i) => walkFor(current) && missed(t) ? '×' : String(i + 1);
   function visibleTrains(n) {
-    const all = data.trains.filter(t => t.eta > Date.now() - 30e3);
-    if (!walkFor(current)) return all.slice(0, n);
-    const gone = all.filter(missed);
-    return gone.slice(-1).concat(all.filter(t => !missed(t))).slice(0, n);
+    return data.trains.filter(t => t.eta > Date.now() - 30e3).slice(0, n);
   }
   function leaveText() {
     const walk = walkFor(current);
@@ -681,12 +680,6 @@
 
       this.sprite = dotSprite(t, pitch);
       this.spriteSize = this.sprite.width;
-      // the same dot, faint: for trains you can no longer catch
-      this.dimSprite = document.createElement('canvas');
-      this.dimSprite.width = this.dimSprite.height = this.spriteSize;
-      const dc = this.dimSprite.getContext('2d');
-      dc.globalAlpha = 0.3;
-      dc.drawImage(this.sprite, 0, 0);
     }
     // Portrait: the whole screen is one tall display. Station and direction at the top,
     // five trains on two lines each, then the clock and messages.
@@ -724,11 +717,10 @@
         const y = top + i * 19, label = minsLabel(t.eta), lw = measure(label);
         // "Hainault via Newbury Park": the via part goes on the second line, beside the time
         const m = /^(.*?)\s+((?:via\s.*)|\(.*\))$/.exec(t.dest);
-        drawText(buf, String(i + 1), 2, y);
+        drawText(buf, trainNumber(t, i), 2, y);
         marquee(m ? m[1] : t.dest, y, 10, W - 1, false);
         if (m) marquee(m[2], y + 9, 10, W - 2 - lw - 4, false);
         drawText(buf, label, W - 2 - lw, y + 9);
-        if (walkFor(current) && missed(t)) this.dimRows(y, y + 18);
       });
 
       const base = top + PORTRAIT_TRAINS * 19;
@@ -775,10 +767,9 @@
         const y = ROW_Y[i];
         const label = minsLabel(t.eta);
         const lw = measure(label);
-        drawText(buf, String(i + 1), 2, y);
+        drawText(buf, trainNumber(t, i), 2, y);
         drawText(buf, fitDest(t.dest, W - 12 - lw - 8), 12, y);
         drawText(buf, label, W - 2 - lw, y);
-        if (walkFor(current) && missed(t)) this.dimRows(y, y + 9);
       });
 
       const y = ROW_Y[3];
@@ -831,12 +822,8 @@
       ctx.drawImage(this.grid, 0, 0);
       const off = spriteSize / 2;
       for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-        const v = buf[y * W + x];
-        if (v) ctx.drawImage(v === 2 ? this.dimSprite : sprite, (x + .5) * pitch - off, (y + .5) * pitch - off);
+        if (buf[y * W + x]) ctx.drawImage(sprite, (x + .5) * pitch - off, (y + .5) * pitch - off);
       }
-    }
-    dimRows(y0, y1) {
-      for (let y = Math.max(0, y0); y < Math.min(H, y1); y++) for (let x = 0; x < W; x++) if (this.buf[y * W + x] === 1) this.buf[y * W + x] = 2;
     }
   }
 
