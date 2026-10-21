@@ -606,12 +606,10 @@
   const walkTimes = store.get('walkTimes', {});
   const walkFor = b => (b && walkTimes[b.naptan]) || 0;
   const missed = t => t.eta - Date.now() < walkFor(current) * 60e3;
-  // Trains to show: with a walking time set, at most one you can no longer catch, then the rest
+  // Trains to show, always in order: ones too soon to walk to are dimmed, never hidden,
+  // so the next train is still there if you're already at the station
   function visibleTrains(n) {
-    const all = data.trains.filter(t => t.eta > Date.now() - 30e3);
-    if (!walkFor(current)) return all.slice(0, n);
-    const gone = all.filter(missed);
-    return gone.slice(-1).concat(all.filter(t => !missed(t))).slice(0, n);
+    return data.trains.filter(t => t.eta > Date.now() - 30e3).slice(0, n);
   }
   function leaveText() {
     const walk = walkFor(current);
@@ -685,7 +683,7 @@
       this.dimSprite = document.createElement('canvas');
       this.dimSprite.width = this.dimSprite.height = this.spriteSize;
       const dc = this.dimSprite.getContext('2d');
-      dc.globalAlpha = 0.3;
+      dc.globalAlpha = 0.45;
       dc.drawImage(this.sprite, 0, 0);
     }
     // Portrait: the whole screen is one tall display. Station and direction at the top,
